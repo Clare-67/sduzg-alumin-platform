@@ -84,9 +84,11 @@ func sanitizeExportValue(v string) string {
 
 type AlumniService struct {
 	alumni      repository.AlumniStore
+	users       repository.UserStore
 	files       AlumniFileCleaner
 	dataDomains repository.AccessControlStore
 	opLogger    OperationLogWriter
+	auditWriter AuditEventWriter
 	countCache  *cache.CountCache
 	exportCache *cache.ExportCache
 }
@@ -114,6 +116,21 @@ func (s *AlumniService) WithExportCache(c *cache.ExportCache) *AlumniService {
 // WithOperationLogger 注入导出和导入操作审计记录器。
 func (s *AlumniService) WithOperationLogger(logger OperationLogWriter) *AlumniService {
 	s.opLogger = logger
+	if writer, ok := logger.(AuditEventWriter); ok {
+		s.auditWriter = writer
+	}
+	return s
+}
+
+// WithAuditWriter 注入档案新增、修改、删除的审计事件写入器。
+func (s *AlumniService) WithAuditWriter(writer AuditEventWriter) *AlumniService {
+	s.auditWriter = writer
+	return s
+}
+
+// WithAuditUserStore 注入操作历史需要读取的操作用户存储。
+func (s *AlumniService) WithAuditUserStore(users repository.UserStore) *AlumniService {
+	s.users = users
 	return s
 }
 
@@ -317,6 +334,19 @@ func (s *AlumniService) Create(ctx context.Context, operator common.AccessContex
 		return nil, err
 	}
 
+	writeProfileAudit(
+		ctx,
+		s.auditWriter,
+		s.users,
+		operator.UserID,
+		"create",
+		"admin",
+		"管理员新增校友档案",
+		defaultAuditScope,
+		nil,
+		created,
+	)
+
 	if s.countCache != nil {
 		_ = s.countCache.IncrBy(ctx, 1)
 	}
@@ -348,6 +378,10 @@ func (s *AlumniService) Update(ctx context.Context, operator common.AccessContex
 		return nil, common.ErrAlumniNotFound
 	}
 
+	var before *model.AlumniProfile
+	if s.auditWriter != nil && s.users != nil {
+		before, _ = s.alumni.GetByID(ctx, id, domainIDs)
+	}
 	if err := s.alumni.Update(ctx, id, operator.UserID, profile, domainIDs); err != nil {
 		if errors.Is(err, common.ErrDatabaseUnavailable) {
 			logger.Error("database is unavailable", zap.Uint64("operator_id", operator.UserID), zap.Uint64("alumni_id", id), zap.Error(err))
@@ -359,6 +393,22 @@ func (s *AlumniService) Update(ctx context.Context, operator common.AccessContex
 		}
 		logger.Error("failed to update alumni", zap.Uint64("operator_id", operator.UserID), zap.Uint64("alumni_id", id), zap.Error(err))
 		return nil, err
+	}
+
+	if before != nil {
+		after, _ := s.alumni.GetByID(ctx, id, domainIDs)
+		writeProfileAudit(
+			ctx,
+			s.auditWriter,
+			s.users,
+			operator.UserID,
+			"update",
+			"admin",
+			"管理员修改校友档案",
+			defaultAuditScope,
+			before,
+			after,
+		)
 	}
 
 	updated, err := s.GetByID(ctx, id, operator)
@@ -383,6 +433,10 @@ func (s *AlumniService) Delete(ctx context.Context, operator common.AccessContex
 	if restricted && len(domainIDs) == 0 {
 		return common.ErrAlumniNotFound
 	}
+	var before *model.AlumniProfile
+	if s.auditWriter != nil && s.users != nil {
+		before, _ = s.alumni.GetByID(ctx, id, domainIDs)
+	}
 	if err := s.alumni.Delete(ctx, id, operator.UserID, domainIDs); err != nil {
 		if errors.Is(err, common.ErrDatabaseUnavailable) {
 			logger.Error("database is unavailable", zap.Uint64("operator_id", operator.UserID), zap.Uint64("alumni_id", id), zap.Error(err))
@@ -395,6 +449,19 @@ func (s *AlumniService) Delete(ctx context.Context, operator common.AccessContex
 		logger.Error("failed to delete alumni", zap.Uint64("operator_id", operator.UserID), zap.Uint64("alumni_id", id), zap.Error(err))
 		return err
 	}
+
+	writeProfileAudit(
+		ctx,
+		s.auditWriter,
+		s.users,
+		operator.UserID,
+		"delete",
+		"admin",
+		"管理员删除校友档案",
+		defaultAuditScope,
+		before,
+		nil,
+	)
 
 	if s.countCache != nil {
 		_ = s.countCache.IncrBy(ctx, -1)
@@ -483,11 +550,21 @@ type exportAuditDetail struct {
 }
 
 type importAuditDetail struct {
-	DataDomainIDs           []uint64 `json:"data_domain_ids,omitempty"`
-	Total                   int      `json:"total"`
-	Success                 int      `json:"success"`
-	Failed                  int      `json:"failed"`
-	SensitiveFieldsIncluded bool     `json:"sensitive_fields_included"`
+	SchemaVersion             int                `json:"schema_version"`
+	TargetName                string             `json:"target_name,omitempty"`
+	TargetMeta                string             `json:"target_meta,omitempty"`
+	ManagementScope           string             `json:"management_scope,omitempty"`
+	Source                    string             `json:"source,omitempty"`
+	Reason                    string             `json:"reason,omitempty"`
+	Status                    string             `json:"status,omitempty"`
+	DataDomainIDs             []uint64           `json:"data_domain_ids,omitempty"`
+	Total                     int                `json:"total"`
+	Success                   int                `json:"success"`
+	Failed                    int                `json:"failed"`
+	SensitiveFieldsIncluded   bool               `json:"sensitive_fields_included"`
+	BatchImportFields         []auditBatchField  `json:"batch_import_fields,omitempty"`
+	BatchCreatedAlumni        []auditBatchRecord `json:"batch_created_alumni,omitempty"`
+	BatchHiddenSensitiveCount int                `json:"batch_hidden_sensitive_count,omitempty"`
 }
 
 func (s *AlumniService) buildAndAuditExport(ctx context.Context, operator common.AccessContext, query do.AlumniListQuery, items []*model.AlumniProfile, format string) (*ExportResult, error) {
@@ -830,7 +907,14 @@ func (s *AlumniService) Import(ctx context.Context, operator common.AccessContex
 		}
 
 		if len(validProfiles) > 0 {
-			if err := s.alumni.BatchCreate(ctx, validProfiles, operator.UserID); err != nil {
+			var createdProfiles []*model.AlumniProfile
+			var err error
+			if creator, ok := s.alumni.(repository.AlumniBatchCreator); ok {
+				createdProfiles, err = creator.BatchCreateAndReturnProfiles(ctx, validProfiles, operator.UserID)
+			} else {
+				err = s.alumni.BatchCreate(ctx, validProfiles, operator.UserID)
+			}
+			if err != nil {
 				logger.Error("failed to batch create alumni", zap.Uint64("operator_id", operator.UserID), zap.Error(err))
 				return nil, err
 			}
@@ -841,8 +925,10 @@ func (s *AlumniService) Import(ctx context.Context, operator common.AccessContex
 			if s.exportCache != nil {
 				_ = s.exportCache.Invalidate(ctx)
 			}
+			s.writeImportAudit(ctx, operator, validProfiles, createdProfiles, result)
+			return result, nil
 		}
-		s.writeImportAudit(ctx, operator, validProfiles, result)
+		s.writeImportAudit(ctx, operator, validProfiles, nil, result)
 
 		return result, nil
 	}
@@ -851,12 +937,12 @@ func (s *AlumniService) Import(ctx context.Context, operator common.AccessContex
 		Total:  len(rows) - 1,
 		Errors: rowErrors,
 	}
-	s.writeImportAudit(ctx, operator, nil, result)
+	s.writeImportAudit(ctx, operator, nil, nil, result)
 	return result, nil
 }
 
-// writeImportAudit 记录导入结果汇总，不写入任何校友字段原值。
-func (s *AlumniService) writeImportAudit(ctx context.Context, operator common.AccessContext, profiles []do.AlumniCreateProfile, result *dto.AlumniImportResult) {
+// writeImportAudit 记录导入结果和可跳转的公开字段，不写入任何校友敏感字段原值。
+func (s *AlumniService) writeImportAudit(ctx context.Context, operator common.AccessContext, profiles []do.AlumniCreateProfile, createdProfiles []*model.AlumniProfile, result *dto.AlumniImportResult) {
 	if s.opLogger == nil || result == nil {
 		return
 	}
@@ -875,13 +961,30 @@ func (s *AlumniService) writeImportAudit(ctx context.Context, operator common.Ac
 		domainIDs = append(domainIDs, domainID)
 	}
 	sort.Slice(domainIDs, func(i, j int) bool { return domainIDs[i] < domainIDs[j] })
+	managementScope := s.importManagementScope(ctx, domainIDs)
+	batchRecords := make([]auditBatchRecord, 0, len(createdProfiles))
+	for _, profile := range createdProfiles {
+		if profile != nil && profile.ID != 0 {
+			batchRecords = append(batchRecords, batchAuditRecord(profile))
+		}
+	}
 
 	detail, err := json.Marshal(importAuditDetail{
-		DataDomainIDs:           domainIDs,
-		Total:                   result.Total,
-		Success:                 result.Success,
-		Failed:                  result.Total - result.Success,
-		SensitiveFieldsIncluded: sensitiveFieldsIncluded,
+		SchemaVersion:             1,
+		DataDomainIDs:             domainIDs,
+		Total:                     result.Total,
+		Success:                   result.Success,
+		Failed:                    result.Total - result.Success,
+		SensitiveFieldsIncluded:   sensitiveFieldsIncluded,
+		TargetName:                "校友档案批量导入",
+		TargetMeta:                fmt.Sprintf("%d 条校友档案", result.Success),
+		ManagementScope:           managementScope,
+		Source:                    "admin_import",
+		Reason:                    "导入校友档案",
+		Status:                    "applied",
+		BatchImportFields:         auditBatchFields(),
+		BatchCreatedAlumni:        batchRecords,
+		BatchHiddenSensitiveCount: len(auditBatchSensitiveFields),
 	})
 	if err != nil {
 		return
@@ -890,10 +993,63 @@ func (s *AlumniService) writeImportAudit(ctx context.Context, operator common.Ac
 	_ = s.opLogger.Write(ctx, &model.OperationLog{
 		OperatorID:   operator.UserID,
 		OperatorRole: operator.Role,
-		Action:       "import_alumni",
-		TargetType:   "alumni_import",
+		Action:       AuditActionImport,
+		TargetType:   auditTargetBatch,
 		Detail:       &detailText,
 	})
+}
+
+func batchAuditRecord(profile *model.AlumniProfile) auditBatchRecord {
+	return auditBatchRecord{
+		ID:         profile.ID,
+		Name:       profile.Name,
+		TargetMeta: batchAuditMeta(profile),
+		FieldValues: map[string]string{
+			"name":          profile.Name,
+			"grade":         profile.Grade,
+			"class_name":    stringOrEmpty(profile.ClassName),
+			"major":         stringOrEmpty(profile.Major),
+			"training_mode": stringOrEmpty(profile.TrainingMode),
+		},
+	}
+}
+
+func batchAuditMeta(profile *model.AlumniProfile) string {
+	parts := make([]string, 0, 2)
+	if profile != nil && profile.Grade != "" {
+		parts = append(parts, profile.Grade)
+	}
+	if profile != nil && profile.Major != nil && *profile.Major != "" {
+		parts = append(parts, *profile.Major)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func (s *AlumniService) importManagementScope(ctx context.Context, domainIDs []uint64) string {
+	if len(domainIDs) == 0 || s.dataDomains == nil {
+		return defaultAuditScope
+	}
+	domains, err := s.dataDomains.ListActiveDataDomains(ctx)
+	if err != nil {
+		return defaultAuditScope
+	}
+	wanted := make(map[uint64]struct{}, len(domainIDs))
+	for _, id := range domainIDs {
+		wanted[id] = struct{}{}
+	}
+	names := make([]string, 0, len(domainIDs))
+	for _, domain := range domains {
+		if domain == nil {
+			continue
+		}
+		if _, ok := wanted[domain.ID]; ok {
+			names = append(names, domain.Name)
+		}
+	}
+	if len(names) == 0 {
+		return defaultAuditScope
+	}
+	return strings.Join(names, "、")
 }
 
 func matchesImportHeaders(actual, expected []string) bool {
@@ -984,6 +1140,10 @@ func (s *AlumniService) UpdateMe(ctx context.Context, access common.AccessContex
 	}
 
 	profile := req.ToProfile().Normalize()
+	var before *model.AlumniProfile
+	if s.auditWriter != nil && s.users != nil {
+		before, _ = s.alumni.GetByID(ctx, alumniID, nil)
+	}
 	if !profile.IsEmpty() {
 		if err := s.alumni.UpdateEditableFields(ctx, alumniID, access.UserID, profile); err != nil {
 			if errors.Is(err, common.ErrDatabaseUnavailable) {
@@ -997,6 +1157,21 @@ func (s *AlumniService) UpdateMe(ctx context.Context, access common.AccessContex
 			logger.Error("failed to update alumni profile", zap.Uint64("alumni_id", alumniID), zap.Uint64("user_id", access.UserID), zap.Error(err))
 			return nil, err
 		}
+	}
+	if before != nil {
+		after, _ := s.alumni.GetByID(ctx, alumniID, nil)
+		writeProfileAudit(
+			ctx,
+			s.auditWriter,
+			s.users,
+			access.UserID,
+			"update",
+			"alumni_self",
+			"校友本人修改个人资料",
+			defaultAuditScope,
+			before,
+			after,
+		)
 	}
 
 	return s.GetByID(ctx, alumniID, access)
