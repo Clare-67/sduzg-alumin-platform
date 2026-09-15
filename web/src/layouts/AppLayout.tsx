@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChartOutlined,
+  BookOutlined,
   IdcardOutlined,
   LogoutOutlined,
   SearchOutlined,
@@ -55,6 +56,14 @@ export function AppLayout() {
       });
     }
 
+    if (user) {
+      items.push({
+        key: '/history',
+        icon: <BookOutlined />,
+        label: '院史共编',
+      });
+    }
+
     if (hasRole(user, 'super_admin')) {
       items.push({
         key: '/admin/users',
@@ -78,6 +87,9 @@ export function AppLayout() {
     }
     if (location.pathname.startsWith('/profile')) {
       return ['/profile'];
+    }
+    if (location.pathname.startsWith('/history')) {
+      return ['/history'];
     }
     return ['/alumni'];
   }, [location.pathname]);

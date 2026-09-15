@@ -12,6 +12,7 @@ import { AlumniManagementPage } from '../pages/admin/AlumniManagementPage';
 import { DashboardPage } from '../pages/dashboard/DashboardPage';
 import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
 import { PublicHomePage } from '../pages/common/PublicHomePage';
+import { HistoryWikiPage } from '../pages/history/HistoryWikiPage';
 
 export const router = createBrowserRouter([
   {
@@ -28,6 +29,10 @@ export const router = createBrowserRouter([
       {
         element: <AppLayout />,
         children: [
+          {
+            path: '/history',
+            element: <HistoryWikiPage />,
+          },
           {
             element: <RequireAuth exactRole="alumni" />,
             children: [
