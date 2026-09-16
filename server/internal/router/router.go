@@ -135,11 +135,16 @@ func New(deps Dependencies) *gin.Engine {
 		// 院史共编（所有接口均需已登录；投稿仅校友可用，审核由服务层校验管理员数据域）
 		history := api.Group("/history")
 		{
+			history.GET("/entries", historyHandler.ListEntries)
+			history.GET("/entries/:id", historyHandler.GetEntry)
+			history.GET("/contributions/me", historyHandler.ListMine)
 			history.POST("/contributions", historyHandler.CreateDraft)
 			history.POST("/contributions/:id/submit", historyHandler.Submit)
 			history.POST("/contributions/:id/attachments/upload-url", historyHandler.RequestAttachmentUpload)
 			history.POST("/contributions/:id/attachments/:attachmentId/confirm", historyHandler.ConfirmAttachmentUpload)
 			history.GET("/contributions/:id/attachments/:attachmentId/download", historyHandler.AttachmentDownloadURL)
+			history.GET("/reviews", historyHandler.ListPending)
+			history.POST("/reviews/:id", historyHandler.Review)
 		}
 
 		// 管理员专用接口
