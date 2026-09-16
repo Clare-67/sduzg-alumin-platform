@@ -120,12 +120,29 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 12
+      minio:
+        image: quay.io/minio/minio:latest
+        command: server /data
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin123
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:9000/minio/health/live"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
     defaults:
       run:
         working-directory: server
     env:
       TEST_MYSQL_DSN: root:test-password@tcp(127.0.0.1:3306)/sdu_alumni_db?charset=utf8mb4&parseTime=true&loc=Local
       TEST_REDIS_ADDR: 127.0.0.1:6379
+      TEST_MINIO_ENDPOINT: 127.0.0.1:9000
+      TEST_MINIO_ACCESS_KEY: minioadmin
+      TEST_MINIO_SECRET_KEY: minioadmin123
+      TEST_MINIO_BUCKET: sdu-alumni-integration-test
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
