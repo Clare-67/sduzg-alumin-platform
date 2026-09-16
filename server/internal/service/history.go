@@ -256,7 +256,7 @@ func allowedHistoryMime(mimeType string) bool {
 }
 
 func historyEntryItem(entry *model.HistoryEntry) dto.HistoryEntryItem {
-	return dto.HistoryEntryItem{ID: entry.ID, Title: entry.Title, Summary: entry.Summary, Content: entry.Content, CurrentVersion: entry.CurrentVersion, UpdatedAt: entry.UpdatedAt}
+	return dto.HistoryEntryItem{ID: entry.ID, Title: entry.Title, Summary: entry.Summary, Content: entry.Content, CurrentVersion: uint(entry.CurrentVersion), UpdatedAt: entry.UpdatedAt}
 }
 
 func historyContributionItem(item *model.HistoryContribution) dto.HistoryContributionItem {
