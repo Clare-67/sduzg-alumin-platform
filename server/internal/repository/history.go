@@ -8,6 +8,8 @@ import (
 
 	"github.com/JunLang-7/sduzg-alumin-platform/server/internal/common"
 	"github.com/JunLang-7/sduzg-alumin-platform/server/internal/model"
+	"github.com/JunLang-7/sduzg-alumin-platform/server/internal/query"
+	"gorm.io/gen/field"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -28,10 +30,11 @@ func (r *HistoryRepository) ListPublished(ctx context.Context, keyword string) (
 	if r == nil || r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
-	db := r.db.WithContext(ctx).Where("status = ?", "published").Order("updated_at DESC")
+	qs := query.Use(r.db).HistoryEntry
+	db := r.db.WithContext(ctx).Where(qs.Status.Eq("published")).Order(qs.UpdatedAt.Desc())
 	if keyword = strings.TrimSpace(keyword); keyword != "" {
 		like := "%" + keyword + "%"
-		db = db.Where("title LIKE ? OR summary LIKE ? OR content LIKE ?", like, like, like)
+		db = db.Where(field.Or(qs.Title.Like(like), qs.Summary.Like(like), qs.Content.Like(like)))
 	}
 	var entries []*model.HistoryEntry
 	if err := db.Find(&entries).Error; err != nil {
@@ -44,8 +47,9 @@ func (r *HistoryRepository) GetPublished(ctx context.Context, id uint64) (*model
 	if r == nil || r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
+	qs := query.Use(r.db).HistoryEntry
 	var entry model.HistoryEntry
-	if err := r.db.WithContext(ctx).Where("id = ? AND status = ?", id, "published").First(&entry).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where(qs.ID.Eq(id), qs.Status.Eq("published")).First(&entry).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, common.ErrHistoryEntryNotFound
 		}
@@ -58,8 +62,9 @@ func (r *HistoryRepository) AlumniDomainID(ctx context.Context, alumniID uint64)
 	if r == nil || r.db == nil {
 		return 0, common.ErrDatabaseUnavailable
 	}
+	qs := query.Use(r.db).AlumniProfile
 	var profile model.AlumniProfile
-	if err := r.db.WithContext(ctx).Select("data_domain_id").First(&profile, alumniID).Error; err != nil {
+	if err := r.db.WithContext(ctx).Select(qs.DataDomainID).Where(qs.ID.Eq(alumniID)).First(&profile).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return 0, common.ErrAlumniNotFound
 		}
@@ -82,8 +87,9 @@ func (r *HistoryRepository) GetContribution(ctx context.Context, id uint64) (*mo
 	if r == nil || r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
+	qs := query.Use(r.db).HistoryContribution
 	var item model.HistoryContribution
-	if err := r.db.WithContext(ctx).First(&item, id).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where(qs.ID.Eq(id)).First(&item).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, common.ErrHistoryContributionNotFound
 		}
@@ -96,8 +102,9 @@ func (r *HistoryRepository) ListMine(ctx context.Context, userID uint64) ([]*mod
 	if r == nil || r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
+	qs := query.Use(r.db).HistoryContribution
 	var items []*model.HistoryContribution
-	if err := r.db.WithContext(ctx).Where("author_user_id = ?", userID).Order("updated_at DESC").Find(&items).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where(qs.AuthorUserID.Eq(userID)).Order(qs.UpdatedAt.Desc()).Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return items, nil
@@ -107,12 +114,13 @@ func (r *HistoryRepository) ListPending(ctx context.Context, domainIDs []uint64,
 	if r == nil || r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
-	db := r.db.WithContext(ctx).Where("status = ?", HistoryContributionPending).Order("submitted_at ASC")
+	qs := query.Use(r.db).HistoryContribution
+	db := r.db.WithContext(ctx).Where(qs.Status.Eq(HistoryContributionPending)).Order(qs.SubmittedAt)
 	if !allDomains {
 		if len(domainIDs) == 0 {
 			return []*model.HistoryContribution{}, nil
 		}
-		db = db.Where("data_domain_id IN ?", domainIDs)
+		db = db.Where(qs.DataDomainID.In(domainIDs...))
 	}
 	var items []*model.HistoryContribution
 	if err := db.Find(&items).Error; err != nil {
@@ -133,7 +141,8 @@ func (r *HistoryRepository) Submit(ctx context.Context, id, userID uint64) (*mod
 		return nil, common.ErrInvalidHistoryState
 	}
 	now := time.Now()
-	if err := r.db.WithContext(ctx).Model(&model.HistoryContribution{}).Where("id = ?", id).Updates(map[string]any{"status": HistoryContributionPending, "submitted_at": now, "review_comment": nil}).Error; err != nil {
+	qs := query.Use(r.db).HistoryContribution
+	if err := r.db.WithContext(ctx).Model(&model.HistoryContribution{}).Where(qs.ID.Eq(id)).Updates(map[string]any{"status": HistoryContributionPending, "submitted_at": now, "review_comment": nil}).Error; err != nil {
 		return nil, err
 	}
 	return r.GetContribution(ctx, id)
@@ -145,8 +154,11 @@ func (r *HistoryRepository) Review(ctx context.Context, id, reviewerID uint64, a
 	}
 	var result *model.HistoryContribution
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		contributions := query.Use(tx).HistoryContribution
+		entries := query.Use(tx).HistoryEntry
+		attachments := query.Use(tx).HistoryAttachment
 		var item model.HistoryContribution
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&item, id).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where(contributions.ID.Eq(id)).First(&item).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return common.ErrHistoryContributionNotFound
 			}
@@ -171,7 +183,7 @@ func (r *HistoryRepository) Review(ctx context.Context, id, reviewerID uint64, a
 				entryID = &entry.ID
 			} else {
 				var entry model.HistoryEntry
-				if err := tx.First(&entry, *entryID).Error; err != nil {
+				if err := tx.Where(entries.ID.Eq(*entryID)).First(&entry).Error; err != nil {
 					return err
 				}
 				entry.Title, entry.Summary, entry.Content = item.Title, item.ChangeNote, item.Content
@@ -182,7 +194,7 @@ func (r *HistoryRepository) Review(ctx context.Context, id, reviewerID uint64, a
 				}
 			}
 			var entry model.HistoryEntry
-			if err := tx.First(&entry, *entryID).Error; err != nil {
+			if err := tx.Where(entries.ID.Eq(*entryID)).First(&entry).Error; err != nil {
 				return err
 			}
 			version := &model.HistoryEntryVersion{EntryID: entry.ID, VersionNumber: entry.CurrentVersion, Title: entry.Title, Summary: entry.Summary, Content: entry.Content, SourceNote: item.SourceNote, ContributionID: &item.ID, ApprovedBy: reviewerID}
@@ -190,15 +202,15 @@ func (r *HistoryRepository) Review(ctx context.Context, id, reviewerID uint64, a
 				return err
 			}
 			item.EntryID = entryID
-			if err := tx.Model(&model.HistoryAttachment{}).Where("contribution_id = ? AND status = ?", item.ID, "pending").Update("status", "approved").Error; err != nil {
+			if err := tx.Model(&model.HistoryAttachment{}).Where(attachments.ContributionID.Eq(item.ID), attachments.Status.Eq("pending")).Update("status", "approved").Error; err != nil {
 				return err
 			}
 		} else if action == "reject" {
-			if err := tx.Model(&model.HistoryAttachment{}).Where("contribution_id = ? AND status = ?", item.ID, "pending").Update("status", "rejected").Error; err != nil {
+			if err := tx.Model(&model.HistoryAttachment{}).Where(attachments.ContributionID.Eq(item.ID), attachments.Status.Eq("pending")).Update("status", "rejected").Error; err != nil {
 				return err
 			}
 		}
-		if err := tx.Model(&model.HistoryContribution{}).Where("id = ?", id).Updates(map[string]any{"entry_id": item.EntryID, "status": status, "reviewed_by": reviewerID, "review_comment": comment, "reviewed_at": now}).Error; err != nil {
+		if err := tx.Model(&model.HistoryContribution{}).Where(contributions.ID.Eq(id)).Updates(map[string]any{"entry_id": item.EntryID, "status": status, "reviewed_by": reviewerID, "review_comment": comment, "reviewed_at": now}).Error; err != nil {
 			return err
 		}
 		result = &item
@@ -217,7 +229,8 @@ func (r *HistoryRepository) CountAttachments(ctx context.Context, contributionID
 		return 0, common.ErrDatabaseUnavailable
 	}
 	var count int64
-	if err := r.db.WithContext(ctx).Model(&model.HistoryAttachment{}).Where("contribution_id = ?", contributionID).Count(&count).Error; err != nil {
+	qs := query.Use(r.db).HistoryAttachment
+	if err := r.db.WithContext(ctx).Model(&model.HistoryAttachment{}).Where(qs.ContributionID.Eq(contributionID)).Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -237,8 +250,9 @@ func (r *HistoryRepository) GetAttachment(ctx context.Context, id uint64) (*mode
 	if r == nil || r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
+	qs := query.Use(r.db).HistoryAttachment
 	var item model.HistoryAttachment
-	if err := r.db.WithContext(ctx).First(&item, id).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where(qs.ID.Eq(id)).First(&item).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, common.ErrHistoryAttachmentNotFound
 		}
@@ -251,5 +265,6 @@ func (r *HistoryRepository) ConfirmAttachment(ctx context.Context, id, fileSize 
 	if r == nil || r.db == nil {
 		return common.ErrDatabaseUnavailable
 	}
-	return r.db.WithContext(ctx).Model(&model.HistoryAttachment{}).Where("id = ?", id).Update("file_size", fileSize).Error
+	qs := query.Use(r.db).HistoryAttachment
+	return r.db.WithContext(ctx).Model(&model.HistoryAttachment{}).Where(qs.ID.Eq(id)).Update("file_size", fileSize).Error
 }
