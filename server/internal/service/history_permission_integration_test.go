@@ -59,7 +59,15 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 			Title: tag + "-draft", Content: "草稿内容", SourceNote: "测试来源",
 			Status: repository.HistoryContributionDraft, DataDomainID: &mpaID, AuthorUserID: 1102, AuthorAlumniID: 2102,
 		}
-		for _, contribution := range []*model.HistoryContribution{undergraduateContribution, mpaContribution, draft} {
+		returned := &model.HistoryContribution{
+			Title: tag + "-returned", Content: "待补充内容", SourceNote: "测试来源",
+			Status: repository.HistoryContributionReturned, DataDomainID: &mpaID, AuthorUserID: 1102, AuthorAlumniID: 2102,
+		}
+		rejected := &model.HistoryContribution{
+			Title: tag + "-rejected", Content: "待驳回内容", SourceNote: "测试来源",
+			Status: repository.HistoryContributionPending, DataDomainID: &mpaID, AuthorUserID: 1102, AuthorAlumniID: 2102,
+		}
+		for _, contribution := range []*model.HistoryContribution{undergraduateContribution, mpaContribution, draft, returned, rejected} {
 			if err := tx.Create(contribution).Error; err != nil {
 				return err
 			}
@@ -94,6 +102,17 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		}
 		if _, err := svc.ListAttachments(ctx, mpaAdmin, undergraduateContribution.ID); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("out-of-domain attachments error = %v, want permission denied", err)
+		}
+		if _, err := svc.ListAttachments(ctx, alumni, mpaContribution.ID); !errors.Is(err, common.ErrPermissionDenied) {
+			t.Errorf("alumni attachments error = %v, want permission denied", err)
+		}
+		resubmitted, err := svc.Submit(ctx, alumni, returned.ID)
+		if err != nil || resubmitted.Status != repository.HistoryContributionPending {
+			t.Errorf("returned resubmit = %+v, err %v; want pending", resubmitted, err)
+		}
+		rejectedResult, err := svc.Review(ctx, mpaAdmin, rejected.ID, dto.HistoryReviewRequest{Action: "reject", ReviewComment: "资料不完整"})
+		if err != nil || rejectedResult.Status != repository.HistoryContributionRejected {
+			t.Errorf("reject result = %+v, err %v; want rejected", rejectedResult, err)
 		}
 		if _, err := svc.Review(ctx, mpaAdmin, undergraduateContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("out-of-domain review error = %v, want permission denied", err)

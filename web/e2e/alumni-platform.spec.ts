@@ -28,6 +28,9 @@ async function removeAlumni(page: Page, name: string) {
 }
 
 test('未登录和普通校友不能进入管理员功能', async ({ page }) => {
+  await page.goto('/history');
+  await expect(page).toHaveURL(/\/login$/);
+
   await page.goto('/admin/alumni');
   await expect(page).toHaveURL(/\/login$/);
 
