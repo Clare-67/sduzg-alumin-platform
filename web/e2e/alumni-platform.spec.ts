@@ -128,3 +128,44 @@ test('管理员可以上传、下载并删除校友附件', async ({ page }) => 
     await removeAlumni(page, alumniName).catch(() => undefined);
   }
 });
+
+test('校友可投稿院史资料，管理员审核后成为正式词条', async ({ page }) => {
+  const title = `E2E院史词条${Date.now()}`;
+
+  await login(page, '13800001111');
+  await page.goto('/history');
+  await expect(page.getByText('院史共编')).toBeVisible();
+  await page.getByRole('button', { name: '参与编写' }).click();
+  const drawer = page.getByRole('dialog', { name: '提交院史资料' });
+  await drawer.getByLabel('词条标题').fill(title);
+  await drawer.getByLabel('正文').fill('用于端到端验证的院史投稿正文。');
+  await drawer.getByLabel('资料来源').fill('E2E 测试资料来源');
+  await drawer.locator('input[type="file"]').setInputFiles({
+    name: 'history-e2e.pdf',
+    mimeType: 'application/pdf',
+    buffer: attachmentContent,
+  });
+  await drawer.getByText('我确认附件来源真实且有权提交').click();
+  await drawer.getByRole('button', { name: '提交审核' }).click();
+  await expect(page.getByText('资料已提交，审核通过后才会更新正式词条')).toBeVisible();
+
+  await page.goto('/login');
+  await page.evaluate(() => window.localStorage.clear());
+  await login(page, 'admin');
+  await page.goto('/admin/history/reviews');
+  const row = page.getByRole('row').filter({ hasText: title });
+  await expect(row).toBeVisible();
+  await row.getByRole('button', { name: '审核' }).click();
+  await expect(page.getByText('history-e2e.pdf')).toBeVisible();
+  await page.getByRole('button', { name: '通过' }).click();
+  await page
+    .getByRole('button', { name: /确\s*认/ })
+    .last()
+    .click();
+  await expect(page.getByText('处理成功')).toBeVisible();
+
+  await page.goto('/history');
+  await page.getByPlaceholder('搜索已发布词条').fill(title);
+  await page.getByRole('button', { name: '搜索' }).click();
+  await expect(page.getByText(title).first()).toBeVisible();
+});
