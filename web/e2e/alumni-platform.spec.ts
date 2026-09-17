@@ -151,7 +151,9 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
     buffer: attachmentContent,
   });
   const consent = drawer.locator('input[type="checkbox"]');
-  await consent.evaluate((input: HTMLInputElement) => input.click());
+  const consentLabel = drawer.locator('.ant-checkbox-wrapper');
+  await consentLabel.scrollIntoViewIfNeeded();
+  await consentLabel.click();
   await expect(consent).toBeChecked();
   await drawer.getByRole('button', { name: '提交审核' }).click();
   await expect(drawer).toBeHidden();
