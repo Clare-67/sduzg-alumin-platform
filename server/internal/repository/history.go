@@ -261,6 +261,18 @@ func (r *HistoryRepository) GetAttachment(ctx context.Context, id uint64) (*mode
 	return &item, nil
 }
 
+func (r *HistoryRepository) ListAttachments(ctx context.Context, contributionID uint64) ([]*model.HistoryAttachment, error) {
+	if r == nil || r.db == nil {
+		return nil, common.ErrDatabaseUnavailable
+	}
+	qs := query.Use(r.db).HistoryAttachment
+	var items []*model.HistoryAttachment
+	if err := r.db.WithContext(ctx).Where(qs.ContributionID.Eq(contributionID)).Order(qs.ID).Find(&items).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (r *HistoryRepository) ConfirmAttachment(ctx context.Context, id, fileSize uint64) error {
 	if r == nil || r.db == nil {
 		return common.ErrDatabaseUnavailable

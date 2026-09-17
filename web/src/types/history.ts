@@ -22,6 +22,19 @@ export interface HistoryContribution {
   updated_at: string;
 }
 
+export interface HistoryAttachment {
+  id: number;
+  original_name: string;
+  mime_type: string;
+  file_size: number;
+  description: string;
+  source_note: string;
+  rights_note: string;
+  consent_confirmed: boolean;
+}
+
+export type HistoryReviewAction = 'approve' | 'return' | 'reject';
+
 export interface CreateHistoryContributionPayload {
   entry_id?: number;
   title: string;

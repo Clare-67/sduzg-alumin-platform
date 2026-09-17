@@ -134,6 +134,24 @@ func (h *HistoryHandler) Review(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *HistoryHandler) ListAttachments(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+	id, ok := historyID(c, "id")
+	if !ok {
+		return
+	}
+	result, err := h.history.ListAttachments(c.Request.Context(), *access, id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *HistoryHandler) RequestAttachmentUpload(c *gin.Context) {
 	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {

@@ -64,6 +64,9 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 				return err
 			}
 		}
+		if err := tx.Create(&model.HistoryAttachment{ContributionID: mpaContribution.ID, ObjectKey: tag + "/attachment.pdf", OriginalName: "review.pdf", MimeType: "application/pdf", Description: "测试附件", SourceNote: "测试来源", RightsNote: "测试授权", ConsentConfirmed: true, Status: "pending"}).Error; err != nil {
+			return err
+		}
 
 		svc := NewHistoryService(repository.NewHistoryRepository(tx), nil)
 		mpaAdmin := common.AccessContext{UserID: 7001, Role: common.RoleAdmin, DomainIDs: []uint64{mpaID}}
@@ -84,6 +87,13 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		}
 		if _, err := svc.ListMine(ctx, mpaAdmin); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("admin ListMine error = %v, want permission denied", err)
+		}
+		attachments, err := svc.ListAttachments(ctx, mpaAdmin, mpaContribution.ID)
+		if err != nil || len(attachments) != 1 || attachments[0].OriginalName != "review.pdf" {
+			t.Errorf("in-domain attachments = %+v, err %v", attachments, err)
+		}
+		if _, err := svc.ListAttachments(ctx, mpaAdmin, undergraduateContribution.ID); !errors.Is(err, common.ErrPermissionDenied) {
+			t.Errorf("out-of-domain attachments error = %v, want permission denied", err)
 		}
 		if _, err := svc.Review(ctx, mpaAdmin, undergraduateContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("out-of-domain review error = %v, want permission denied", err)

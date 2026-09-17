@@ -3,6 +3,8 @@ import type {
   CreateHistoryContributionPayload,
   HistoryAttachmentUploadResult,
   HistoryContribution,
+  HistoryAttachment,
+  HistoryReviewAction,
   HistoryEntry,
   UploadHistoryAttachmentPayload,
 } from '../types/history';
@@ -34,6 +36,22 @@ export const historyApi = {
     return request<HistoryContribution>({
       method: 'POST',
       url: `/history/contributions/${id}/submit`,
+    });
+  },
+  listPending() {
+    return request<HistoryContribution[]>({ method: 'GET', url: '/history/reviews' });
+  },
+  listReviewAttachments(id: number) {
+    return request<HistoryAttachment[]>({
+      method: 'GET',
+      url: `/history/reviews/${id}/attachments`,
+    });
+  },
+  review(id: number, action: HistoryReviewAction, review_comment = '') {
+    return request<HistoryContribution>({
+      method: 'POST',
+      url: `/history/reviews/${id}`,
+      data: { action, review_comment },
     });
   },
   async uploadAttachment(

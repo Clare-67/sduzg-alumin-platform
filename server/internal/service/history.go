@@ -110,6 +110,32 @@ func (s *HistoryService) ListPending(ctx context.Context, access common.AccessCo
 	return result, nil
 }
 
+func (s *HistoryService) ListAttachments(ctx context.Context, access common.AccessContext, contributionID uint64) ([]dto.HistoryAttachmentItem, error) {
+	if !access.IsAdministrator() {
+		return nil, common.ErrPermissionDenied
+	}
+	item, err := s.repository.GetContribution(ctx, contributionID)
+	if err != nil {
+		return nil, err
+	}
+	if item.DataDomainID == nil {
+		if !access.IsSuperAdmin() {
+			return nil, common.ErrPermissionDenied
+		}
+	} else if !access.CanAccessDomain(*item.DataDomainID) {
+		return nil, common.ErrPermissionDenied
+	}
+	attachments, err := s.repository.ListAttachments(ctx, contributionID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]dto.HistoryAttachmentItem, 0, len(attachments))
+	for _, attachment := range attachments {
+		result = append(result, dto.HistoryAttachmentItem{ID: attachment.ID, OriginalName: attachment.OriginalName, MimeType: attachment.MimeType, FileSize: attachment.FileSize, Description: attachment.Description, SourceNote: attachment.SourceNote, RightsNote: attachment.RightsNote, ConsentConfirmed: attachment.ConsentConfirmed})
+	}
+	return result, nil
+}
+
 func (s *HistoryService) Review(ctx context.Context, access common.AccessContext, id uint64, req dto.HistoryReviewRequest) (*dto.HistoryContributionItem, error) {
 	if !access.IsAdministrator() {
 		return nil, common.ErrPermissionDenied
