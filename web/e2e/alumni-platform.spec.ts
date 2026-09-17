@@ -150,7 +150,7 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
     mimeType: 'application/pdf',
     buffer: attachmentContent,
   });
-  await drawer.getByText('我确认附件来源真实且有权提交').click();
+  await drawer.getByRole('checkbox').check();
   await drawer.getByRole('button', { name: '提交审核' }).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByText(title).last()).toBeVisible();
