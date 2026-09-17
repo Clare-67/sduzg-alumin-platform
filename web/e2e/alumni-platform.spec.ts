@@ -136,6 +136,7 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
   const title = `E2E院史词条${Date.now()}`;
 
   await login(page, '13800001111');
+  await page.waitForURL((url) => url.pathname !== '/login');
   await page.goto('/history');
   const contributeButton = page.getByRole('button', { name: '参与编写' });
   await expect(contributeButton).toBeVisible();
@@ -156,6 +157,7 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
   await page.goto('/login');
   await page.evaluate(() => window.localStorage.clear());
   await login(page, 'admin');
+  await page.waitForURL((url) => url.pathname !== '/login');
   await page.goto('/admin/history/reviews');
   const row = page.getByRole('row').filter({ hasText: title });
   await expect(row).toBeVisible();

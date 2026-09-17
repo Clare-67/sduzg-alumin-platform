@@ -82,16 +82,16 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		alumni := common.AccessContext{UserID: 1102, Role: common.RoleAlumni}
 
 		pending, err := svc.ListPending(ctx, mpaAdmin)
-		if err != nil || len(pending) != 1 || pending[0].ID != mpaContribution.ID {
-			t.Errorf("MPA pending = %+v, err %v; want only MPA contribution", pending, err)
+		if err != nil || len(pending) != 2 || pending[0].ID != mpaContribution.ID {
+			t.Errorf("MPA pending = %+v, err %v; want MPA pending contributions", pending, err)
 		}
 		allPending, err := svc.ListPending(ctx, superAdmin)
-		if err != nil || len(allPending) != 2 {
-			t.Errorf("super-admin pending count = %d, err %v; want 2", len(allPending), err)
+		if err != nil || len(allPending) != 3 {
+			t.Errorf("super-admin pending count = %d, err %v; want 3", len(allPending), err)
 		}
 		mine, err := svc.ListMine(ctx, alumni)
-		if err != nil || len(mine) != 2 {
-			t.Errorf("alumni mine count = %d, err %v; want 2 own contributions", len(mine), err)
+		if err != nil || len(mine) != 4 {
+			t.Errorf("alumni mine count = %d, err %v; want 4 own contributions", len(mine), err)
 		}
 		if _, err := svc.ListMine(ctx, mpaAdmin); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("admin ListMine error = %v, want permission denied", err)
