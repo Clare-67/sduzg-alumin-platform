@@ -49,6 +49,17 @@ type HistoryAttachmentDownloadResult struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
+type HistoryAttachmentItem struct {
+	ID               uint64 `json:"id"`
+	OriginalName     string `json:"original_name"`
+	MimeType         string `json:"mime_type"`
+	FileSize         uint64 `json:"file_size"`
+	Description      string `json:"description"`
+	SourceNote       string `json:"source_note"`
+	RightsNote       string `json:"rights_note"`
+	ConsentConfirmed bool   `json:"consent_confirmed"`
+}
+
 type HistoryContributionItem struct {
 	ID            uint64     `json:"id"`
 	EntryID       *uint64    `json:"entry_id,omitempty"`

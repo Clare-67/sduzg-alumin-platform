@@ -51,6 +51,11 @@ export function AppLayout() {
           icon: <AuditOutlined />,
           label: '操作历史',
         },
+        {
+          key: '/admin/history/reviews',
+          icon: <BookOutlined />,
+          label: '院史待审',
+        },
       );
     }
 
@@ -89,6 +94,9 @@ export function AppLayout() {
     }
     if (location.pathname.startsWith('/admin/audit')) {
       return ['/admin/audit/changes'];
+    }
+    if (location.pathname.startsWith('/admin/history')) {
+      return ['/admin/history/reviews'];
     }
     if (location.pathname.startsWith('/profile')) {
       return ['/profile'];

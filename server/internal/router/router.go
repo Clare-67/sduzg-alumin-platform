@@ -144,6 +144,7 @@ func New(deps Dependencies) *gin.Engine {
 			history.POST("/contributions/:id/attachments/:attachmentId/confirm", historyHandler.ConfirmAttachmentUpload)
 			history.GET("/contributions/:id/attachments/:attachmentId/download", historyHandler.AttachmentDownloadURL)
 			history.GET("/reviews", historyHandler.ListPending)
+			history.GET("/reviews/:id/attachments", historyHandler.ListAttachments)
 			history.POST("/reviews/:id", historyHandler.Review)
 		}
 

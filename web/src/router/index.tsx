@@ -14,6 +14,7 @@ import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
 import { AuditHistoryPage } from '../pages/admin/AuditHistoryPage';
 import { PublicHomePage } from '../pages/common/PublicHomePage';
 import { HistoryWikiPage } from '../pages/history/HistoryWikiPage';
+import { HistoryReviewPage } from '../pages/admin/HistoryReviewPage';
 
 export const router = createBrowserRouter([
   {
@@ -68,6 +69,10 @@ export const router = createBrowserRouter([
           {
             path: '/admin/dashboard',
             element: <DashboardPage />,
+          },
+          {
+            path: '/admin/history/reviews',
+            element: <HistoryReviewPage />,
           },
           {
             path: '/alumni',
