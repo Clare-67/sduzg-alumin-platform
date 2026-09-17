@@ -1,0 +1,125 @@
+.history-page {
+  color: #312623;
+}
+.history-page__header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid #eadfd8;
+  padding-bottom: 24px;
+}
+.history-page__header > div > span {
+  color: #a1261e;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.history-page__header h1 {
+  margin: 8px 0;
+  color: #9f1d17;
+  font-family: STSong, serif;
+  font-size: 38px;
+}
+.history-page__header p,
+.history-page__summary,
+.history-page__content aside p {
+  color: #786c66;
+}
+.history-page__content {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 270px;
+  gap: 28px;
+  margin-top: 24px;
+}
+.history-page__content > aside {
+  border: 1px solid #eadfd8;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fffdfa;
+}
+.history-page__content aside > small {
+  display: block;
+  margin: 4px 0 12px;
+  color: #8d817b;
+}
+.history-page__content .ant-list-item {
+  cursor: pointer;
+}
+.history-page__content .ant-list-item.active {
+  margin: 0 -8px;
+  border-radius: 5px;
+  padding: 8px;
+  background: #9f1d17;
+  color: #fff;
+}
+.history-page__content .ant-list-item small {
+  margin-left: auto;
+}
+.history-page__content article {
+  min-height: 500px;
+  padding: 22px 38px;
+  background: #fffdfa;
+}
+.history-page__content article h2 {
+  margin: 12px 0;
+  font-family: STSong, serif;
+  font-size: 36px;
+}
+.history-page__content article h3 {
+  margin-top: 34px;
+  border-left: 4px solid #a1261e;
+  padding-left: 10px;
+}
+.history-page__meta {
+  border-block: 1px solid #eadfd8;
+  padding: 12px 0;
+  color: #7f736d;
+  font-size: 13px;
+}
+.history-page__body {
+  white-space: pre-wrap;
+  font-family: STSong, serif;
+  font-size: 17px;
+  line-height: 2;
+}
+.history-page__notice {
+  border-radius: 6px;
+  padding: 12px;
+  background: #fff7ed;
+  color: #8b501d;
+}
+.history-page__upload {
+  display: flex;
+  gap: 12px;
+  border: 1px solid #eadfd8;
+  border-radius: 7px;
+  padding: 16px;
+}
+.history-page__upload > .anticon {
+  color: #a1261e;
+  font-size: 24px;
+}
+.history-page__upload p {
+  margin: 4px 0 10px;
+  color: #7d7069;
+}
+.history-page__upload input {
+  display: block;
+  margin-bottom: 10px;
+}
+.history-page__upload .ant-checkbox-wrapper {
+  display: block;
+  margin-top: 8px;
+}
+@media (max-width: 980px) {
+  .history-page__header {
+    align-items: start;
+    flex-direction: column;
+  }
+  .history-page__content {
+    grid-template-columns: 1fr;
+  }
+  .history-page__content article {
+    padding: 22px;
+  }
+}
