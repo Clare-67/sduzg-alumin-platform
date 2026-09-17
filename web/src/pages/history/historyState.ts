@@ -8,10 +8,11 @@ export const historyContributionStatusText: Record<HistoryContributionStatus, st
   rejected: '已驳回',
 };
 
-export const historyContributionStatusColor: Record<HistoryContributionStatus, string | undefined> = {
-  draft: undefined,
-  pending: 'processing',
-  returned: 'warning',
-  approved: 'success',
-  rejected: 'error',
-};
+export const historyContributionStatusColor: Record<HistoryContributionStatus, string | undefined> =
+  {
+    draft: undefined,
+    pending: 'processing',
+    returned: 'warning',
+    approved: 'success',
+    rejected: 'error',
+  };

@@ -14,25 +14,47 @@ const storageURL = (url: string) => {
 
 export const historyApi = {
   listEntries(keyword?: string) {
-    return request<HistoryEntry[]>({ method: 'GET', url: '/history/entries', params: keyword ? { keyword } : undefined });
+    return request<HistoryEntry[]>({
+      method: 'GET',
+      url: '/history/entries',
+      params: keyword ? { keyword } : undefined,
+    });
   },
   listMine() {
     return request<HistoryContribution[]>({ method: 'GET', url: '/history/contributions/me' });
   },
   createDraft(payload: CreateHistoryContributionPayload) {
-    return request<HistoryContribution>({ method: 'POST', url: '/history/contributions', data: payload });
+    return request<HistoryContribution>({
+      method: 'POST',
+      url: '/history/contributions',
+      data: payload,
+    });
   },
   submit(id: number) {
-    return request<HistoryContribution>({ method: 'POST', url: `/history/contributions/${id}/submit` });
+    return request<HistoryContribution>({
+      method: 'POST',
+      url: `/history/contributions/${id}/submit`,
+    });
   },
-  async uploadAttachment(contributionID: number, file: File, payload: UploadHistoryAttachmentPayload) {
+  async uploadAttachment(
+    contributionID: number,
+    file: File,
+    payload: UploadHistoryAttachmentPayload,
+  ) {
     const result = await request<HistoryAttachmentUploadResult>({
       method: 'POST',
       url: `/history/contributions/${contributionID}/attachments/upload-url`,
       data: { original_name: file.name, mime_type: file.type, ...payload },
     });
-    const response = await fetch(storageURL(result.upload_url), { method: 'PUT', body: file, headers: { 'Content-Type': file.type } });
+    const response = await fetch(storageURL(result.upload_url), {
+      method: 'PUT',
+      body: file,
+      headers: { 'Content-Type': file.type },
+    });
     if (!response.ok) throw new Error(`附件上传失败：${response.status}`);
-    await request({ method: 'POST', url: `/history/contributions/${contributionID}/attachments/${result.id}/confirm` });
+    await request({
+      method: 'POST',
+      url: `/history/contributions/${contributionID}/attachments/${result.id}/confirm`,
+    });
   },
 };
