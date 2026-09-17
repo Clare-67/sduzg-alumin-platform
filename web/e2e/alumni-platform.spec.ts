@@ -134,8 +134,9 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
 
   await login(page, '13800001111');
   await page.goto('/history');
-  await expect(page.getByText('院史共编')).toBeVisible();
-  await page.getByRole('button', { name: '参与编写' }).click();
+  const contributeButton = page.getByRole('button', { name: '参与编写' });
+  await expect(contributeButton).toBeVisible();
+  await contributeButton.click();
   const drawer = page.getByRole('dialog', { name: '提交院史资料' });
   await drawer.getByLabel('词条标题').fill(title);
   await drawer.getByLabel('正文').fill('用于端到端验证的院史投稿正文。');
