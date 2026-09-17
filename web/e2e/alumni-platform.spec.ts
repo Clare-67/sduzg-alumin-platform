@@ -150,7 +150,9 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
     mimeType: 'application/pdf',
     buffer: attachmentContent,
   });
-  await drawer.locator('input[type="checkbox"]').check({ force: true });
+  const consent = drawer.locator('input[type="checkbox"]');
+  await consent.evaluate((input: HTMLInputElement) => input.click());
+  await expect(consent).toBeChecked();
   await drawer.getByRole('button', { name: '提交审核' }).click();
   await expect(drawer).toBeHidden();
   await expect(page.getByText(title).last()).toBeVisible();
