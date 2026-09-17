@@ -19,6 +19,33 @@ func NewHistoryHandler(history *service.HistoryService) *HistoryHandler {
 	return &HistoryHandler{history: history}
 }
 
+func (h *HistoryHandler) ListEntries(c *gin.Context) {
+	var req dto.HistoryEntryListRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "invalid request")
+		return
+	}
+	result, err := h.history.ListEntries(c.Request.Context(), req.Keyword)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *HistoryHandler) GetEntry(c *gin.Context) {
+	id, ok := historyID(c, "id")
+	if !ok {
+		return
+	}
+	result, err := h.history.GetEntry(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 func (h *HistoryHandler) CreateDraft(c *gin.Context) {
 	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {
@@ -49,6 +76,57 @@ func (h *HistoryHandler) Submit(c *gin.Context) {
 		return
 	}
 	result, err := h.history.Submit(c.Request.Context(), *access, id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *HistoryHandler) ListMine(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+	result, err := h.history.ListMine(c.Request.Context(), *access)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *HistoryHandler) ListPending(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+	result, err := h.history.ListPending(c.Request.Context(), *access)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *HistoryHandler) Review(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+	id, ok := historyID(c, "id")
+	if !ok {
+		return
+	}
+	var req dto.HistoryReviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "invalid request")
+		return
+	}
+	result, err := h.history.Review(c.Request.Context(), *access, id, req)
 	if err != nil {
 		h.writeError(c, err)
 		return

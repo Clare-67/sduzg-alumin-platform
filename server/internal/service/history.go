@@ -25,6 +25,29 @@ func NewHistoryService(repository *repository.HistoryRepository, storageClient *
 	return &HistoryService{repository: repository, storage: storageClient}
 }
 
+// ListEntries returns only published entries. Route authentication is enforced
+// globally; this method deliberately never exposes a draft or pending entry.
+func (s *HistoryService) ListEntries(ctx context.Context, keyword string) ([]dto.HistoryEntryItem, error) {
+	entries, err := s.repository.ListPublished(ctx, keyword)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]dto.HistoryEntryItem, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, historyEntryItem(entry))
+	}
+	return result, nil
+}
+
+func (s *HistoryService) GetEntry(ctx context.Context, id uint64) (*dto.HistoryEntryItem, error) {
+	entry, err := s.repository.GetPublished(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	result := historyEntryItem(entry)
+	return &result, nil
+}
+
 func (s *HistoryService) CreateDraft(ctx context.Context, access common.AccessContext, req dto.HistoryContributionRequest) (*dto.HistoryContributionItem, error) {
 	if access.Role != common.RoleAlumni || access.AlumniID == nil {
 		return nil, common.ErrPermissionDenied
@@ -50,6 +73,62 @@ func (s *HistoryService) Submit(ctx context.Context, access common.AccessContext
 		return nil, common.ErrPermissionDenied
 	}
 	item, err := s.repository.Submit(ctx, id, access.UserID)
+	if err != nil {
+		return nil, err
+	}
+	result := historyContributionItem(item)
+	return &result, nil
+}
+
+func (s *HistoryService) ListMine(ctx context.Context, access common.AccessContext) ([]dto.HistoryContributionItem, error) {
+	if access.Role != common.RoleAlumni {
+		return nil, common.ErrPermissionDenied
+	}
+	items, err := s.repository.ListMine(ctx, access.UserID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]dto.HistoryContributionItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, historyContributionItem(item))
+	}
+	return result, nil
+}
+
+func (s *HistoryService) ListPending(ctx context.Context, access common.AccessContext) ([]dto.HistoryContributionItem, error) {
+	if !access.IsAdministrator() {
+		return nil, common.ErrPermissionDenied
+	}
+	items, err := s.repository.ListPending(ctx, access.DomainIDs, access.IsSuperAdmin())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]dto.HistoryContributionItem, 0, len(items))
+	for _, item := range items {
+		result = append(result, historyContributionItem(item))
+	}
+	return result, nil
+}
+
+func (s *HistoryService) Review(ctx context.Context, access common.AccessContext, id uint64, req dto.HistoryReviewRequest) (*dto.HistoryContributionItem, error) {
+	if !access.IsAdministrator() {
+		return nil, common.ErrPermissionDenied
+	}
+	if (req.Action == "return" || req.Action == "reject") && strings.TrimSpace(req.ReviewComment) == "" {
+		return nil, common.ErrInvalidRequest
+	}
+	item, err := s.repository.GetContribution(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if item.DataDomainID == nil {
+		if !access.IsSuperAdmin() {
+			return nil, common.ErrPermissionDenied
+		}
+	} else if !access.CanAccessDomain(*item.DataDomainID) {
+		return nil, common.ErrPermissionDenied
+	}
+	item, err = s.repository.Review(ctx, id, access.UserID, req.Action, strings.TrimSpace(req.ReviewComment))
 	if err != nil {
 		return nil, err
 	}
@@ -176,6 +255,10 @@ func allowedHistoryMime(mimeType string) bool {
 	default:
 		return false
 	}
+}
+
+func historyEntryItem(entry *model.HistoryEntry) dto.HistoryEntryItem {
+	return dto.HistoryEntryItem{ID: entry.ID, Title: entry.Title, Summary: entry.Summary, Content: entry.Content, CurrentVersion: uint(entry.CurrentVersion), UpdatedAt: entry.UpdatedAt}
 }
 
 func historyContributionItem(item *model.HistoryContribution) dto.HistoryContributionItem {

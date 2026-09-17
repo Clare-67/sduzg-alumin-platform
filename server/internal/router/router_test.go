@@ -221,6 +221,29 @@ func TestAlumniListRouteRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestHistoryEntryRouteRequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	engine := New(Dependencies{
+		Config: config.Config{
+			App: config.AppConfig{Name: "test-api", Env: config.EnvDevelopment},
+		},
+		Logger: zap.NewNop(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/history/entries", nil)
+	rec := httptest.NewRecorder()
+
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"code":40100`) {
+		t.Fatalf("expected unauthorized response, got %s", rec.Body.String())
+	}
+}
+
 func TestAlumniListRouteWithoutDatabase(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
