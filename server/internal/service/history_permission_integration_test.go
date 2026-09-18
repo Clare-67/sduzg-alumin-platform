@@ -80,6 +80,45 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		mpaAdmin := common.AccessContext{UserID: 7001, Role: common.RoleAdmin, DomainIDs: []uint64{mpaID}}
 		superAdmin := common.AccessContext{UserID: 7002, Role: common.RoleSuperAdmin}
 		alumni := common.AccessContext{UserID: 1102, Role: common.RoleAlumni}
+		// Exercise the same domain lookup and insert path used by a logged-in
+		// alumnus submitting a new contribution. First use the seeded E2E alumnus
+		// (the exact account used by the browser flow), then a fresh profile. The
+		// permission fixtures above insert contributions directly, which would
+		// otherwise miss this path.
+		var seededProfile model.AlumniProfile
+		if err := tx.Where("mobile = ?", "13800001111").First(&seededProfile).Error; err != nil {
+			return err
+		}
+		var seededUser model.User
+		if err := tx.Where("alumni_id = ?", seededProfile.ID).First(&seededUser).Error; err != nil {
+			return err
+		}
+		seeded, err := svc.CreateDraft(ctx, common.AccessContext{
+			UserID: seededUser.ID, Role: common.RoleAlumni, AlumniID: &seededProfile.ID,
+		}, dto.HistoryContributionRequest{
+			Title: tag + "-seeded", Content: "种子校友投稿创建路径", SourceNote: "测试来源",
+		})
+		if err != nil || seeded == nil || seeded.Status != repository.HistoryContributionDraft || seeded.DataDomainID == nil || *seeded.DataDomainID != mpaID {
+			t.Errorf("seeded alumni create draft = %+v, err %v; want MPA draft", seeded, err)
+		}
+
+		profile := &model.AlumniProfile{
+			DataDomainID: mpaID,
+			Name:         tag + "-author",
+			Grade:        "2020",
+			Status:       "active",
+		}
+		if err := tx.Create(profile).Error; err != nil {
+			return err
+		}
+		created, err := svc.CreateDraft(ctx, common.AccessContext{
+			UserID: 1201, Role: common.RoleAlumni, AlumniID: &profile.ID,
+		}, dto.HistoryContributionRequest{
+			Title: tag + "-created", Content: "真实投稿创建路径", SourceNote: "测试来源",
+		})
+		if err != nil || created == nil || created.Status != repository.HistoryContributionDraft || created.DataDomainID == nil || *created.DataDomainID != mpaID {
+			t.Errorf("alumni create draft = %+v, err %v; want MPA draft", created, err)
+		}
 
 		pending, err := svc.ListPending(ctx, mpaAdmin)
 		if err != nil || len(pending) != 2 || pending[0].ID != mpaContribution.ID {
