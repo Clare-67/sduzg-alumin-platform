@@ -172,6 +172,10 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
   await page.locator('.ant-modal-confirm-btns .ant-btn-primary').click();
   await expect(page.getByText('处理成功')).toBeVisible();
 
+  await page.goto('/login');
+  await page.evaluate(() => window.localStorage.clear());
+  await login(page, '13800001111');
+  await page.waitForURL((url) => url.pathname !== '/login');
   await page.goto('/history');
   await page.getByPlaceholder('搜索已发布词条').fill(title);
   await page.getByPlaceholder('搜索已发布词条').press('Enter');
