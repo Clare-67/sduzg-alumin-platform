@@ -169,10 +169,7 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
   await row.getByRole('button', { name: '审核' }).click();
   await expect(page.getByRole('heading', { name: 'history-e2e.pdf' })).toBeVisible();
   await page.getByRole('button', { name: '通过' }).click();
-  await page
-    .getByRole('button', { name: /确\s*认/ })
-    .last()
-    .click();
+  await page.locator('.ant-modal-confirm-btns .ant-btn-primary').click();
   await expect(page.getByText('处理成功')).toBeVisible();
 
   await page.goto('/history');
