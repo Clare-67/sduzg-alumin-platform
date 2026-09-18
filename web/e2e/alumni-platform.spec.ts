@@ -174,6 +174,6 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
 
   await page.goto('/history');
   await page.getByPlaceholder('搜索已发布词条').fill(title);
-  await page.getByRole('button', { name: '搜索' }).click();
+  await page.getByPlaceholder('搜索已发布词条').press('Enter');
   await expect(page.getByText(title).first()).toBeVisible();
 });
