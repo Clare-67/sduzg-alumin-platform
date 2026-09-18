@@ -167,7 +167,7 @@ test('校友可投稿院史资料，管理员审核后成为正式词条', async
   const row = page.getByRole('row').filter({ hasText: title });
   await expect(row).toBeVisible();
   await row.getByRole('button', { name: '审核' }).click();
-  await expect(page.getByText('history-e2e.pdf')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'history-e2e.pdf' })).toBeVisible();
   await page.getByRole('button', { name: '通过' }).click();
   await page
     .getByRole('button', { name: /确\s*认/ })
