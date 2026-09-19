@@ -61,7 +61,7 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		}
 		returned := &model.HistoryContribution{
 			Title: tag + "-returned", Content: "待补充内容", SourceNote: "测试来源",
-			Status: repository.HistoryContributionReturned, DataDomainID: &mpaID, AuthorUserID: 1102, AuthorAlumniID: 2102,
+			Status: repository.HistoryContributionPending, DataDomainID: &mpaID, AuthorUserID: 1102, AuthorAlumniID: 2102,
 		}
 		rejected := &model.HistoryContribution{
 			Title: tag + "-rejected", Content: "待驳回内容", SourceNote: "测试来源",
@@ -72,14 +72,22 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 				return err
 			}
 		}
-		if err := tx.Create(&model.HistoryAttachment{ContributionID: mpaContribution.ID, ObjectKey: tag + "/attachment.pdf", OriginalName: "review.pdf", MimeType: "application/pdf", Description: "测试附件", SourceNote: "测试来源", RightsNote: "测试授权", ConsentConfirmed: true, Status: "pending"}).Error; err != nil {
+		pendingAttachment := &model.HistoryAttachment{ContributionID: mpaContribution.ID, ObjectKey: tag + "/attachment.pdf", OriginalName: "review.pdf", MimeType: "application/pdf", Description: "测试附件", SourceNote: "测试来源", RightsNote: "测试授权", ConsentConfirmed: true, Status: "pending"}
+		rejectedAttachment := &model.HistoryAttachment{ContributionID: rejected.ID, ObjectKey: tag + "/rejected.pdf", OriginalName: "rejected.pdf", MimeType: "application/pdf", Description: "测试附件", SourceNote: "测试来源", RightsNote: "测试授权", ConsentConfirmed: true, Status: "pending"}
+		if err := tx.Create(pendingAttachment).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(rejectedAttachment).Error; err != nil {
 			return err
 		}
 
 		svc := NewHistoryService(repository.NewHistoryRepository(tx), nil)
 		mpaAdmin := common.AccessContext{UserID: 7001, Role: common.RoleAdmin, DomainIDs: []uint64{mpaID}}
+		multiDomainAdmin := common.AccessContext{UserID: 7003, Role: common.RoleAdmin, DomainIDs: []uint64{undergraduateID, mpaID}}
+		unassignedAdmin := common.AccessContext{UserID: 7004, Role: common.RoleAdmin}
 		superAdmin := common.AccessContext{UserID: 7002, Role: common.RoleSuperAdmin}
 		alumni := common.AccessContext{UserID: 1102, Role: common.RoleAlumni}
+		otherAlumni := common.AccessContext{UserID: 1103, Role: common.RoleAlumni}
 		// Exercise the same domain lookup and insert path used by a logged-in
 		// alumnus submitting a new contribution. First use the seeded E2E alumnus
 		// (the exact account used by the browser flow), then a fresh profile. The
@@ -119,14 +127,32 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		if err != nil || created == nil || created.Status != repository.HistoryContributionDraft || created.DataDomainID == nil || *created.DataDomainID != mpaID {
 			t.Errorf("alumni create draft = %+v, err %v; want MPA draft", created, err)
 		}
+		undergraduateProfile := &model.AlumniProfile{DataDomainID: undergraduateID, Name: tag + "-undergraduate-author", Grade: "2020", Status: "active"}
+		if err := tx.Create(undergraduateProfile).Error; err != nil {
+			return err
+		}
+		undergraduateDraft, err := svc.CreateDraft(ctx, common.AccessContext{
+			UserID: 1202, Role: common.RoleAlumni, AlumniID: &undergraduateProfile.ID,
+		}, dto.HistoryContributionRequest{Title: tag + "-undergraduate-draft", Content: "本科校友投稿", SourceNote: "测试来源"})
+		if err != nil || undergraduateDraft == nil || undergraduateDraft.DataDomainID == nil || *undergraduateDraft.DataDomainID != undergraduateID {
+			t.Errorf("undergraduate alumni draft = %+v, err %v; want assigned undergraduate domain", undergraduateDraft, err)
+		}
 
 		pending, err := svc.ListPending(ctx, mpaAdmin)
-		if err != nil || len(pending) != 2 || pending[0].ID != mpaContribution.ID {
+		if err != nil || len(pending) != 3 {
 			t.Errorf("MPA pending = %+v, err %v; want MPA pending contributions", pending, err)
 		}
 		allPending, err := svc.ListPending(ctx, superAdmin)
-		if err != nil || len(allPending) != 3 {
-			t.Errorf("super-admin pending count = %d, err %v; want 3", len(allPending), err)
+		if err != nil || len(allPending) != 4 {
+			t.Errorf("super-admin pending count = %d, err %v; want 4", len(allPending), err)
+		}
+		multiPending, err := svc.ListPending(ctx, multiDomainAdmin)
+		if err != nil || len(multiPending) != 4 {
+			t.Errorf("multi-domain pending count = %d, err %v; want 4", len(multiPending), err)
+		}
+		unassignedPending, err := svc.ListPending(ctx, unassignedAdmin)
+		if err != nil || len(unassignedPending) != 0 {
+			t.Errorf("unassigned admin pending = %+v, err %v; want no contributions", unassignedPending, err)
 		}
 		mine, err := svc.ListMine(ctx, alumni)
 		if err != nil || len(mine) != 4 {
@@ -144,6 +170,22 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		}
 		if _, err := svc.ListAttachments(ctx, alumni, mpaContribution.ID); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("alumni attachments error = %v, want permission denied", err)
+		}
+		if _, err := svc.AttachmentDownloadURL(ctx, otherAlumni, mpaContribution.ID, pendingAttachment.ID); !errors.Is(err, common.ErrPermissionDenied) {
+			t.Errorf("other alumni pending attachment = %v, want permission denied", err)
+		}
+		if _, err := svc.AttachmentDownloadURL(ctx, alumni, mpaContribution.ID, pendingAttachment.ID); !errors.Is(err, common.ErrStorageUnavailable) {
+			t.Errorf("author pending attachment = %v, want storage unavailable after authorization", err)
+		}
+		if _, err := svc.Review(ctx, unassignedAdmin, mpaContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrPermissionDenied) {
+			t.Errorf("unassigned admin review error = %v, want permission denied", err)
+		}
+		if _, err := svc.Review(ctx, multiDomainAdmin, undergraduateContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); err != nil {
+			t.Errorf("multi-domain admin cross-domain approve: %v", err)
+		}
+		returnedResult, err := svc.Review(ctx, mpaAdmin, returned.ID, dto.HistoryReviewRequest{Action: "return", ReviewComment: "请补充来源"})
+		if err != nil || returnedResult.Status != repository.HistoryContributionReturned {
+			t.Errorf("return result = %+v, err %v; want returned", returnedResult, err)
 		}
 		resubmitted, err := svc.Submit(ctx, alumni, returned.ID)
 		if err != nil || resubmitted.Status != repository.HistoryContributionPending {
@@ -163,8 +205,8 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		if err != nil || approved.Status != repository.HistoryContributionApproved || approved.EntryID == nil {
 			t.Errorf("approve result = %+v, err %v; want approved contribution with entry", approved, err)
 		}
-		if _, err := svc.Review(ctx, superAdmin, undergraduateContribution.ID, dto.HistoryReviewRequest{Action: "reject", ReviewComment: "资料不完整"}); err != nil {
-			t.Errorf("super-admin cross-domain reject: %v", err)
+		if _, err := svc.Review(ctx, superAdmin, returned.ID, dto.HistoryReviewRequest{Action: "reject", ReviewComment: "资料不完整"}); err != nil {
+			t.Errorf("super-admin review after resubmission: %v", err)
 		}
 		var versions int64
 		if err := tx.Model(&model.HistoryEntryVersion{}).Where("contribution_id = ?", mpaContribution.ID).Count(&versions).Error; err != nil {
@@ -172,6 +214,29 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		}
 		if versions != 1 {
 			t.Errorf("approved contribution versions = %d, want 1", versions)
+		}
+		var rejectedVersions int64
+		if err := tx.Model(&model.HistoryEntryVersion{}).Where("contribution_id = ?", rejected.ID).Count(&rejectedVersions).Error; err != nil {
+			return err
+		}
+		if rejectedVersions != 0 {
+			t.Errorf("rejected contribution versions = %d, want 0", rejectedVersions)
+		}
+		var approvedAttachment, rejectedAttachmentState model.HistoryAttachment
+		if err := tx.First(&approvedAttachment, pendingAttachment.ID).Error; err != nil {
+			return err
+		}
+		if approvedAttachment.Status != "approved" {
+			t.Errorf("approved attachment status = %q, want approved", approvedAttachment.Status)
+		}
+		if err := tx.First(&rejectedAttachmentState, rejectedAttachment.ID).Error; err != nil {
+			return err
+		}
+		if rejectedAttachmentState.Status != "rejected" {
+			t.Errorf("rejected attachment status = %q, want rejected", rejectedAttachmentState.Status)
+		}
+		if _, err := svc.AttachmentDownloadURL(ctx, otherAlumni, mpaContribution.ID, pendingAttachment.ID); !errors.Is(err, common.ErrStorageUnavailable) {
+			t.Errorf("other alumni approved attachment = %v, want storage unavailable after public authorization", err)
 		}
 		return rollback
 	})
