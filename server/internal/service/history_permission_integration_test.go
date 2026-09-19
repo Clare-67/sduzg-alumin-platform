@@ -34,9 +34,12 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	var undergraduate, mpa model.DataDomain
+	var undergraduate, academicGraduate, mpa model.DataDomain
 	if err := db.Where("code = ?", common.DataDomainUndergraduate).First(&undergraduate).Error; err != nil {
 		t.Fatalf("find undergraduate domain: %v", err)
+	}
+	if err := db.Where("code = ?", common.DataDomainAcademicGraduate).First(&academicGraduate).Error; err != nil {
+		t.Fatalf("find academic graduate domain: %v", err)
 	}
 	if err := db.Where("code = ?", common.DataDomainMPA).First(&mpa).Error; err != nil {
 		t.Fatalf("find MPA domain: %v", err)
@@ -46,7 +49,7 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 	err = db.Transaction(func(tx *gorm.DB) error {
 		ctx := context.Background()
 		tag := fmt.Sprintf("history-permission-%d", time.Now().UnixNano())
-		undergraduateID, mpaID := undergraduate.ID, mpa.ID
+		undergraduateID, academicGraduateID, mpaID := undergraduate.ID, academicGraduate.ID, mpa.ID
 		undergraduateContribution := &model.HistoryContribution{
 			Title: tag + "-undergraduate", Content: "本科投稿内容", SourceNote: "测试来源",
 			Status: repository.HistoryContributionPending, DataDomainID: &undergraduateID, AuthorUserID: 1101, AuthorAlumniID: 2101,
@@ -67,7 +70,11 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 			Title: tag + "-rejected", Content: "待驳回内容", SourceNote: "测试来源",
 			Status: repository.HistoryContributionPending, DataDomainID: &mpaID, AuthorUserID: 1102, AuthorAlumniID: 2102,
 		}
-		for _, contribution := range []*model.HistoryContribution{undergraduateContribution, mpaContribution, draft, returned, rejected} {
+		unassignedContribution := &model.HistoryContribution{
+			Title: tag + "-unassigned", Content: "未分配培养类别的投稿内容", SourceNote: "测试来源",
+			Status: repository.HistoryContributionPending, AuthorUserID: 1104, AuthorAlumniID: 2104,
+		}
+		for _, contribution := range []*model.HistoryContribution{undergraduateContribution, mpaContribution, draft, returned, rejected, unassignedContribution} {
 			if err := tx.Create(contribution).Error; err != nil {
 				return err
 			}
@@ -94,12 +101,30 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		// permission fixtures above insert contributions directly, which would
 		// otherwise miss this path.
 		var seededProfile model.AlumniProfile
-		if err := tx.Where("mobile = ?", "13800001111").First(&seededProfile).Error; err != nil {
-			return err
+		seededMobile := "13800001111"
+		if err := tx.Where("mobile = ?", seededMobile).First(&seededProfile).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			seededProfile = model.AlumniProfile{
+				DataDomainID: mpaID, Name: tag + "-seeded-author", Grade: "2020", Mobile: &seededMobile, Status: "active",
+			}
+			if err := tx.Create(&seededProfile).Error; err != nil {
+				return err
+			}
 		}
 		var seededUser model.User
 		if err := tx.Where("alumni_id = ?", seededProfile.ID).First(&seededUser).Error; err != nil {
-			return err
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			seededUser = model.User{
+				Account: tag + "-seeded-user", PasswordHash: "not-used-in-this-test", Role: common.RoleAlumni,
+				AlumniID: &seededProfile.ID, Status: "active",
+			}
+			if err := tx.Create(&seededUser).Error; err != nil {
+				return err
+			}
 		}
 		seeded, err := svc.CreateDraft(ctx, common.AccessContext{
 			UserID: seededUser.ID, Role: common.RoleAlumni, AlumniID: &seededProfile.ID,
@@ -137,22 +162,36 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		if err != nil || undergraduateDraft == nil || undergraduateDraft.DataDomainID == nil || *undergraduateDraft.DataDomainID != undergraduateID {
 			t.Errorf("undergraduate alumni draft = %+v, err %v; want assigned undergraduate domain", undergraduateDraft, err)
 		}
+		academicGraduateProfile := &model.AlumniProfile{DataDomainID: academicGraduateID, Name: tag + "-academic-graduate-author", Grade: "2020", Status: "active"}
+		if err := tx.Create(academicGraduateProfile).Error; err != nil {
+			return err
+		}
+		academicGraduateDraft, err := svc.CreateDraft(ctx, common.AccessContext{
+			UserID: 1203, Role: common.RoleAlumni, AlumniID: &academicGraduateProfile.ID,
+		}, dto.HistoryContributionRequest{Title: tag + "-academic-graduate-draft", Content: "学术学位研究生校友投稿", SourceNote: "测试来源"})
+		if err != nil || academicGraduateDraft == nil || academicGraduateDraft.DataDomainID == nil || *academicGraduateDraft.DataDomainID != academicGraduateID {
+			t.Errorf("academic graduate alumni draft = %+v, err %v; want assigned academic graduate domain", academicGraduateDraft, err)
+		}
 
 		pending, err := svc.ListPending(ctx, mpaAdmin)
-		if err != nil || len(pending) != 3 {
-			t.Errorf("MPA pending = %+v, err %v; want MPA pending contributions", pending, err)
+		assertHistoryContributionIDs(t, "MPA pending", pending, mpaContribution.ID, returned.ID, rejected.ID)
+		if err != nil {
+			t.Errorf("MPA pending error = %v", err)
 		}
 		allPending, err := svc.ListPending(ctx, superAdmin)
-		if err != nil || len(allPending) != 4 {
-			t.Errorf("super-admin pending count = %d, err %v; want 4", len(allPending), err)
+		assertHistoryContributionIDs(t, "super-admin pending", allPending, undergraduateContribution.ID, mpaContribution.ID, returned.ID, rejected.ID, unassignedContribution.ID)
+		if err != nil {
+			t.Errorf("super-admin pending error = %v", err)
 		}
 		multiPending, err := svc.ListPending(ctx, multiDomainAdmin)
-		if err != nil || len(multiPending) != 4 {
-			t.Errorf("multi-domain pending count = %d, err %v; want 4", len(multiPending), err)
+		assertHistoryContributionIDs(t, "multi-domain pending", multiPending, undergraduateContribution.ID, mpaContribution.ID, returned.ID, rejected.ID)
+		if err != nil {
+			t.Errorf("multi-domain pending error = %v", err)
 		}
 		unassignedPending, err := svc.ListPending(ctx, unassignedAdmin)
-		if err != nil || len(unassignedPending) != 0 {
-			t.Errorf("unassigned admin pending = %+v, err %v; want no contributions", unassignedPending, err)
+		assertHistoryContributionIDs(t, "unassigned administrator pending", unassignedPending)
+		if err != nil {
+			t.Errorf("unassigned administrator pending error = %v", err)
 		}
 		mine, err := svc.ListMine(ctx, alumni)
 		if err != nil || len(mine) != 4 {
@@ -180,12 +219,21 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		if _, err := svc.Review(ctx, unassignedAdmin, mpaContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("unassigned admin review error = %v, want permission denied", err)
 		}
+		if _, err := svc.Review(ctx, mpaAdmin, unassignedContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrPermissionDenied) {
+			t.Errorf("domain administrator review of unassigned contribution = %v, want permission denied", err)
+		}
+		if _, err := svc.Review(ctx, superAdmin, unassignedContribution.ID, dto.HistoryReviewRequest{Action: "reject", ReviewComment: "请管理员补充分配信息"}); err != nil {
+			t.Errorf("super-admin review of unassigned contribution: %v", err)
+		}
 		if _, err := svc.Review(ctx, multiDomainAdmin, undergraduateContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); err != nil {
 			t.Errorf("multi-domain admin cross-domain approve: %v", err)
 		}
 		returnedResult, err := svc.Review(ctx, mpaAdmin, returned.ID, dto.HistoryReviewRequest{Action: "return", ReviewComment: "请补充来源"})
 		if err != nil || returnedResult.Status != repository.HistoryContributionReturned {
 			t.Errorf("return result = %+v, err %v; want returned", returnedResult, err)
+		}
+		if _, err := svc.Submit(ctx, otherAlumni, returned.ID); !errors.Is(err, common.ErrPermissionDenied) {
+			t.Errorf("other alumnus submit returned contribution = %v, want permission denied", err)
 		}
 		resubmitted, err := svc.Submit(ctx, alumni, returned.ID)
 		if err != nil || resubmitted.Status != repository.HistoryContributionPending {
@@ -194,6 +242,9 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 		rejectedResult, err := svc.Review(ctx, mpaAdmin, rejected.ID, dto.HistoryReviewRequest{Action: "reject", ReviewComment: "资料不完整"})
 		if err != nil || rejectedResult.Status != repository.HistoryContributionRejected {
 			t.Errorf("reject result = %+v, err %v; want rejected", rejectedResult, err)
+		}
+		if _, err := svc.Review(ctx, mpaAdmin, rejected.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrInvalidHistoryState) {
+			t.Errorf("re-review rejected contribution = %v, want invalid state", err)
 		}
 		if _, err := svc.Review(ctx, mpaAdmin, undergraduateContribution.ID, dto.HistoryReviewRequest{Action: "approve"}); !errors.Is(err, common.ErrPermissionDenied) {
 			t.Errorf("out-of-domain review error = %v, want permission denied", err)
@@ -242,5 +293,22 @@ func TestHistoryPermissionsAndReview(t *testing.T) {
 	})
 	if !errors.Is(err, rollback) {
 		t.Fatalf("history permission transaction: %v", err)
+	}
+}
+
+func assertHistoryContributionIDs(t *testing.T, label string, items []dto.HistoryContributionItem, want ...uint64) {
+	t.Helper()
+	if len(items) != len(want) {
+		t.Errorf("%s count = %d, want %d", label, len(items), len(want))
+		return
+	}
+	seen := make(map[uint64]struct{}, len(items))
+	for _, item := range items {
+		seen[item.ID] = struct{}{}
+	}
+	for _, id := range want {
+		if _, ok := seen[id]; !ok {
+			t.Errorf("%s does not contain contribution %d", label, id)
+		}
 	}
 }
