@@ -27,3 +27,20 @@ func TestHistoryWikiMigrationDefinesCoreTablesAndAttachmentRules(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrationTrackingIncludesHistoryWikiMigration(t *testing.T) {
+	migration, err := os.ReadFile("009_add_migration_tracking.sql")
+	if err != nil {
+		t.Fatalf("read migration tracking: %v", err)
+	}
+	content := string(migration)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS schema_migrations",
+		"'008_add_history_wiki.sql'",
+		"'009_add_migration_tracking.sql'",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("migration tracking does not contain %q", want)
+		}
+	}
+}

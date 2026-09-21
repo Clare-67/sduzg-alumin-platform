@@ -65,7 +65,7 @@ docker compose up --build
 | MinIO API | `http://127.0.0.1:9000` |
 | MinIO Console | `http://127.0.0.1:9001` |
 
-首次启动时，MySQL 会执行 `server/migrations/` 下的初始化脚本。开发环境默认超级管理员账号：
+首次启动时，MySQL 会执行 `server/migrations/` 下的初始化脚本；后续启动会在 API 启动前由 `migrate` 服务补齐未执行的增量迁移。已有数据卷无需删除，重新执行 `docker compose up --build` 即可应用新迁移。开发环境默认超级管理员账号：
 
 ```text
 account: admin

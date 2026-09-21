@@ -31,6 +31,9 @@
   gap: 28px;
   margin-top: 24px;
 }
+.history-page__content--read-only {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
 .history-page__content > aside {
   border: 1px solid #eadfd8;
   border-radius: 8px;

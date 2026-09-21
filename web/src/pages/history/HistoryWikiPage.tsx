@@ -3,13 +3,20 @@ import { EditOutlined, PaperClipOutlined, SearchOutlined } from '@ant-design/ico
 import { App, Button, Checkbox, Drawer, Empty, Form, Input, List, Space, Tag } from 'antd';
 import { historyApi } from '../../api/history';
 import type { HistoryContribution, HistoryEntry } from '../../types/history';
-import { historyContributionStatusColor, historyContributionStatusText } from './historyState';
+import { useAuthStore } from '../../store/authStore';
+import {
+  canContributeToHistory,
+  historyContributionStatusColor,
+  historyContributionStatusText,
+} from './historyState';
 import './history-wiki.css';
 
 const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 
 export function HistoryWikiPage() {
   const { message } = App.useApp();
+  const user = useAuthStore((state) => state.user);
+  const canContribute = canContributeToHistory(user?.role);
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [mine, setMine] = useState<HistoryContribution[]>([]);
   const [active, setActive] = useState<HistoryEntry | null>(null);
@@ -23,7 +30,7 @@ export function HistoryWikiPage() {
     try {
       const [entryItems, contributions] = await Promise.all([
         historyApi.listEntries(search.trim() || undefined),
-        historyApi.listMine(),
+        canContribute ? historyApi.listMine() : Promise.resolve([] as HistoryContribution[]),
       ]);
       setEntries(entryItems);
       setMine(contributions);
@@ -90,12 +97,16 @@ export function HistoryWikiPage() {
             placeholder="搜索已发布词条"
           />
           <Button onClick={() => void load()}>搜索</Button>
-          <Button type="primary" icon={<EditOutlined />} onClick={() => setDrawerOpen(true)}>
-            参与编写
-          </Button>
+          {canContribute && (
+            <Button type="primary" icon={<EditOutlined />} onClick={() => setDrawerOpen(true)}>
+              参与编写
+            </Button>
+          )}
         </Space>
       </header>
-      <main className="history-page__content">
+      <main
+        className={`history-page__content${canContribute ? '' : ' history-page__content--read-only'}`}
+      >
         <aside>
           <strong>院史目录</strong>
           <small>{entries.length} 个词条</small>
@@ -127,99 +138,103 @@ export function HistoryWikiPage() {
           <h3>参考资料</h3>
           <p>图片、扫描件和资料来源会在审核通过后随正式版本展示。</p>
         </article>
-        <aside>
-          <strong>我的投稿</strong>
-          <p>仅显示当前登录校友的投稿记录。</p>
-          <List
-            dataSource={mine}
-            locale={{
-              emptyText: <Empty description="还没有投稿" image={Empty.PRESENTED_IMAGE_SIMPLE} />,
-            }}
-            renderItem={(item) => (
-              <List.Item>
-                <div>
-                  <Tag color={historyContributionStatusColor[item.status]}>
-                    {historyContributionStatusText[item.status]}
-                  </Tag>
-                  <b>{item.title}</b>
-                  <p>{item.review_comment || item.change_note || '等待审核'}</p>
-                </div>
-              </List.Item>
-            )}
-          />
-        </aside>
+        {canContribute && (
+          <aside>
+            <strong>我的投稿</strong>
+            <p>仅显示当前登录校友的投稿记录。</p>
+            <List
+              dataSource={mine}
+              locale={{
+                emptyText: <Empty description="还没有投稿" image={Empty.PRESENTED_IMAGE_SIMPLE} />,
+              }}
+              renderItem={(item) => (
+                <List.Item>
+                  <div>
+                    <Tag color={historyContributionStatusColor[item.status]}>
+                      {historyContributionStatusText[item.status]}
+                    </Tag>
+                    <b>{item.title}</b>
+                    <p>{item.review_comment || item.change_note || '等待审核'}</p>
+                  </div>
+                </List.Item>
+              )}
+            />
+          </aside>
+        )}
       </main>
-      <Drawer
-        open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        width={640}
-        title="提交院史资料"
-        footer={
-          <Space>
-            <Button onClick={() => setDrawerOpen(false)}>取消</Button>
-            <Button type="primary" onClick={() => void submit()}>
-              提交审核
-            </Button>
-          </Space>
-        }
-      >
-        <p className="history-page__notice">提交后会进入审核，不会直接修改正式词条。</p>
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={{ title: active?.title, section_name: '词条正文' }}
+      {canContribute && (
+        <Drawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          width={640}
+          title="提交院史资料"
+          footer={
+            <Space>
+              <Button onClick={() => setDrawerOpen(false)}>取消</Button>
+              <Button type="primary" onClick={() => void submit()}>
+                提交审核
+              </Button>
+            </Space>
+          }
         >
-          <Form.Item name="title" label="词条标题" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="section_name" label="编辑章节">
-            <Input />
-          </Form.Item>
-          <Form.Item name="content" label="正文" rules={[{ required: true }]}>
-            <Input.TextArea rows={8} />
-          </Form.Item>
-          <Form.Item name="source_note" label="资料来源" rules={[{ required: true }]}>
-            <Input.TextArea rows={3} placeholder="请注明资料出处" />
-          </Form.Item>
-          <Form.Item name="change_note" label="修改说明">
-            <Input />
-          </Form.Item>
-          <Form.Item name="rights_note" label="附件授权说明">
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <div className="history-page__upload">
-            <PaperClipOutlined />
-            <div>
-              <b>图片和扫描件</b>
-              <p>支持 JPG、PNG、WebP、PDF；单个不超过 10 MB；每次最多 6 个。</p>
-              <input
-                type="file"
-                multiple
-                accept="image/jpeg,image/png,image/webp,application/pdf"
-                onChange={(event) => {
-                  chooseFiles(event.target.files);
-                  event.currentTarget.value = '';
-                }}
-              />
-              {files.map((file) => (
-                <div key={`${file.name}-${file.size}`}>
-                  {file.name}{' '}
-                  <Button
-                    type="link"
-                    danger
-                    onClick={() => setFiles((current) => current.filter((item) => item !== file))}
-                  >
-                    移除
-                  </Button>
-                </div>
-              ))}
-              <Checkbox checked={consent} onChange={(event) => setConsent(event.target.checked)}>
-                我确认附件来源真实且有权提交。
-              </Checkbox>
+          <p className="history-page__notice">提交后会进入审核，不会直接修改正式词条。</p>
+          <Form
+            form={form}
+            layout="vertical"
+            initialValues={{ title: active?.title, section_name: '词条正文' }}
+          >
+            <Form.Item name="title" label="词条标题" rules={[{ required: true }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="section_name" label="编辑章节">
+              <Input />
+            </Form.Item>
+            <Form.Item name="content" label="正文" rules={[{ required: true }]}>
+              <Input.TextArea rows={8} />
+            </Form.Item>
+            <Form.Item name="source_note" label="资料来源" rules={[{ required: true }]}>
+              <Input.TextArea rows={3} placeholder="请注明资料出处" />
+            </Form.Item>
+            <Form.Item name="change_note" label="修改说明">
+              <Input />
+            </Form.Item>
+            <Form.Item name="rights_note" label="附件授权说明">
+              <Input.TextArea rows={2} />
+            </Form.Item>
+            <div className="history-page__upload">
+              <PaperClipOutlined />
+              <div>
+                <b>图片和扫描件</b>
+                <p>支持 JPG、PNG、WebP、PDF；单个不超过 10 MB；每次最多 6 个。</p>
+                <input
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/webp,application/pdf"
+                  onChange={(event) => {
+                    chooseFiles(event.target.files);
+                    event.currentTarget.value = '';
+                  }}
+                />
+                {files.map((file) => (
+                  <div key={`${file.name}-${file.size}`}>
+                    {file.name}{' '}
+                    <Button
+                      type="link"
+                      danger
+                      onClick={() => setFiles((current) => current.filter((item) => item !== file))}
+                    >
+                      移除
+                    </Button>
+                  </div>
+                ))}
+                <Checkbox checked={consent} onChange={(event) => setConsent(event.target.checked)}>
+                  我确认附件来源真实且有权提交。
+                </Checkbox>
+              </div>
             </div>
-          </div>
-        </Form>
-      </Drawer>
+          </Form>
+        </Drawer>
+      )}
     </section>
   );
 }

@@ -1,3 +1,4 @@
+import type { UserRole } from '../../types/auth';
 import type { HistoryContributionStatus } from '../../types/history';
 
 export const historyContributionStatusText: Record<HistoryContributionStatus, string> = {
@@ -16,3 +17,5 @@ export const historyContributionStatusColor: Record<HistoryContributionStatus, s
     approved: 'success',
     rejected: 'error',
   };
+
+export const canContributeToHistory = (role: UserRole | undefined) => role === 'alumni';

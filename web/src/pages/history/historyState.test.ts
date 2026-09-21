@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { historyContributionStatusColor, historyContributionStatusText } from './historyState';
+import {
+  canContributeToHistory,
+  historyContributionStatusColor,
+  historyContributionStatusText,
+} from './historyState';
 
 describe('history contribution state mapping', () => {
   it('maps every private contribution state to a visible label and status color', () => {
@@ -17,5 +21,12 @@ describe('history contribution state mapping', () => {
       approved: 'success',
       rejected: 'error',
     });
+  });
+
+  it('allows only alumni users to create and view their own contributions', () => {
+    expect(canContributeToHistory('alumni')).toBe(true);
+    expect(canContributeToHistory('admin')).toBe(false);
+    expect(canContributeToHistory('super_admin')).toBe(false);
+    expect(canContributeToHistory(undefined)).toBe(false);
   });
 });
