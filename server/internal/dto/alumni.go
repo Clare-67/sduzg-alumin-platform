@@ -8,20 +8,67 @@ import (
 )
 
 type AlumniListRequest struct {
-	Page         int    `form:"page"`
-	PageSize     int    `form:"page_size"`
-	Keyword      string `form:"keyword"`
-	Grade        string `form:"grade"`
-	ClassName    string `form:"class_name"`
-	Cohort       string `form:"cohort"`
-	Counselor    string `form:"counselor"`
-	Mentor       string `form:"mentor"`
-	Major        string `form:"major"`
-	TrainingMode string `form:"training_mode"`
-	Industry     string `form:"industry"`
-	WorkUnit     string `form:"work_unit"`
-	Position     string `form:"position"`
-	Mobile       string `form:"mobile"`
+	Page         int     `form:"page"`
+	PageSize     int     `form:"page_size"`
+	Keyword      string  `form:"keyword"`
+	Grade        string  `form:"grade"`
+	ClassName    string  `form:"class_name"`
+	Cohort       string  `form:"cohort"`
+	Counselor    string  `form:"counselor"`
+	Mentor       string  `form:"mentor"`
+	Major        string  `form:"major"`
+	TrainingMode string  `form:"training_mode"`
+	Industry     string  `form:"industry"`
+	WorkUnit     string  `form:"work_unit"`
+	Position     string  `form:"position"`
+	Mobile       string  `form:"mobile"`
+	DataDomainID *uint64 `form:"data_domain_id"`
+}
+
+type AlumniExportRequest struct {
+	Format       string  `form:"format"`
+	Keyword      string  `form:"keyword"`
+	Grade        string  `form:"grade"`
+	ClassName    string  `form:"class_name"`
+	Cohort       string  `form:"cohort"`
+	Counselor    string  `form:"counselor"`
+	Mentor       string  `form:"mentor"`
+	Major        string  `form:"major"`
+	TrainingMode string  `form:"training_mode"`
+	Industry     string  `form:"industry"`
+	WorkUnit     string  `form:"work_unit"`
+	Position     string  `form:"position"`
+	Mobile       string  `form:"mobile"`
+	DataDomainID *uint64 `form:"data_domain_id"`
+}
+
+func (r AlumniExportRequest) FormatOrDefault() string {
+	if r.Format == "csv" {
+		return "csv"
+	}
+	return "xlsx"
+}
+
+func (r AlumniExportRequest) ToQuery() do.AlumniListQuery {
+	return do.AlumniListQuery{
+		Page: common.PageQuery{
+			Page:     1,
+			PageSize: 0,
+		},
+		Keyword:      r.Keyword,
+		Grade:        r.Grade,
+		ClassName:    r.ClassName,
+		Cohort:       r.Cohort,
+		Counselor:    r.Counselor,
+		Mentor:       r.Mentor,
+		Major:        r.Major,
+		TrainingMode: r.TrainingMode,
+		Industry:     r.Industry,
+		WorkUnit:     r.WorkUnit,
+		Position:     r.Position,
+		Mobile:       r.Mobile,
+		DataDomainID: r.DataDomainID,
+	}
 }
 
 func (r AlumniListRequest) ToQuery() do.AlumniListQuery {
@@ -42,6 +89,7 @@ func (r AlumniListRequest) ToQuery() do.AlumniListQuery {
 		WorkUnit:     r.WorkUnit,
 		Position:     r.Position,
 		Mobile:       r.Mobile,
+		DataDomainID: r.DataDomainID,
 	}
 }
 
@@ -62,6 +110,7 @@ func (r AlumniProfileUpdateRequest) ToProfile() do.AlumniEditableProfile {
 }
 
 type AdminAlumniCreateRequest struct {
+	DataDomainID   *uint64 `json:"data_domain_id"`
 	Name           string  `json:"name" binding:"required"`
 	Grade          string  `json:"grade" binding:"required"`
 	ClassName      *string `json:"class_name"`
@@ -76,6 +125,7 @@ type AdminAlumniCreateRequest struct {
 	MailingAddress *string `json:"mailing_address"`
 	Gender         *string `json:"gender"`
 	Mobile         *string `json:"mobile"`
+	Email          *string `json:"email"`
 	Remark         *string `json:"remark"`
 }
 
@@ -94,11 +144,13 @@ type AdminAlumniUpdateRequest struct {
 	MailingAddress *string `json:"mailing_address"`
 	Gender         *string `json:"gender"`
 	Mobile         *string `json:"mobile"`
+	Email          *string `json:"email"`
 	Remark         *string `json:"remark"`
 }
 
 func (r AdminAlumniCreateRequest) ToProfile() do.AlumniCreateProfile {
 	return do.AlumniCreateProfile{
+		DataDomainID:   r.DataDomainID,
 		Name:           r.Name,
 		Grade:          r.Grade,
 		ClassName:      r.ClassName,
@@ -113,6 +165,7 @@ func (r AdminAlumniCreateRequest) ToProfile() do.AlumniCreateProfile {
 		MailingAddress: r.MailingAddress,
 		Gender:         r.Gender,
 		Mobile:         r.Mobile,
+		Email:          r.Email,
 		Remark:         r.Remark,
 	}
 }
@@ -133,12 +186,14 @@ func (r AdminAlumniUpdateRequest) ToProfile() do.AlumniUpdateProfile {
 		MailingAddress: r.MailingAddress,
 		Gender:         r.Gender,
 		Mobile:         r.Mobile,
+		Email:          r.Email,
 		Remark:         r.Remark,
 	}
 }
 
 type AlumniListItem struct {
 	ID           uint64    `json:"id"`
+	DataDomainID uint64    `json:"data_domain_id"`
 	Name         string    `json:"name"`
 	Grade        string    `json:"grade"`
 	ClassName    *string   `json:"class_name"`
@@ -152,11 +207,25 @@ type AlumniListItem struct {
 	Position     *string   `json:"position"`
 	Gender       *string   `json:"gender"`
 	Mobile       *string   `json:"mobile"`
+	Email        *string   `json:"email"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type AlumniImportResult struct {
+	Total   int              `json:"total"`
+	Success int              `json:"success"`
+	Errors  []AlumniRowError `json:"errors"`
+}
+
+type AlumniRowError struct {
+	Row     int    `json:"row"`
+	Name    string `json:"name"`
+	Message string `json:"message"`
 }
 
 type AlumniDetail struct {
 	ID             uint64    `json:"id"`
+	DataDomainID   uint64    `json:"data_domain_id"`
 	Name           string    `json:"name"`
 	Grade          string    `json:"grade"`
 	ClassName      *string   `json:"class_name"`
@@ -171,7 +240,15 @@ type AlumniDetail struct {
 	MailingAddress *string   `json:"mailing_address"`
 	Gender         *string   `json:"gender"`
 	Mobile         *string   `json:"mobile"`
+	Email          *string   `json:"email"`
 	Status         string    `json:"status"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// UpdateContactRequest 修改校友手机号和/或邮箱
+type UpdateContactRequest struct {
+	Mobile *string `json:"mobile"`
+	Email  *string `json:"email"`
+	Code   string  `json:"code"`
 }

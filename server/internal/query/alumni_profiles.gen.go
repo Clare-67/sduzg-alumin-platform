@@ -28,6 +28,7 @@ func newAlumniProfile(db *gorm.DB, opts ...gen.DOOption) alumniProfile {
 	tableName := _alumniProfile.alumniProfileDo.TableName()
 	_alumniProfile.ALL = field.NewAsterisk(tableName)
 	_alumniProfile.ID = field.NewUint64(tableName, "id")
+	_alumniProfile.DataDomainID = field.NewUint64(tableName, "data_domain_id")
 	_alumniProfile.Name = field.NewString(tableName, "name")
 	_alumniProfile.Grade = field.NewString(tableName, "grade")
 	_alumniProfile.ClassName = field.NewString(tableName, "class_name")
@@ -42,6 +43,7 @@ func newAlumniProfile(db *gorm.DB, opts ...gen.DOOption) alumniProfile {
 	_alumniProfile.MailingAddress = field.NewString(tableName, "mailing_address")
 	_alumniProfile.Gender = field.NewString(tableName, "gender")
 	_alumniProfile.Mobile = field.NewString(tableName, "mobile")
+	_alumniProfile.Email = field.NewString(tableName, "email")
 	_alumniProfile.Remark = field.NewString(tableName, "remark")
 	_alumniProfile.Status = field.NewString(tableName, "status")
 	_alumniProfile.CreatedBy = field.NewUint64(tableName, "created_by")
@@ -61,6 +63,7 @@ type alumniProfile struct {
 
 	ALL            field.Asterisk
 	ID             field.Uint64
+	DataDomainID   field.Uint64 // alumni data domain id
 	Name           field.String // name
 	Grade          field.String // grade
 	ClassName      field.String // class
@@ -75,6 +78,7 @@ type alumniProfile struct {
 	MailingAddress field.String // mailing address
 	Gender         field.String // gender
 	Mobile         field.String // mobile
+	Email          field.String // email address
 	Remark         field.String // admin remark
 	Status         field.String // active/deleted
 	CreatedBy      field.Uint64 // creator user id
@@ -99,6 +103,7 @@ func (a alumniProfile) As(alias string) *alumniProfile {
 func (a *alumniProfile) updateTableName(table string) *alumniProfile {
 	a.ALL = field.NewAsterisk(table)
 	a.ID = field.NewUint64(table, "id")
+	a.DataDomainID = field.NewUint64(table, "data_domain_id")
 	a.Name = field.NewString(table, "name")
 	a.Grade = field.NewString(table, "grade")
 	a.ClassName = field.NewString(table, "class_name")
@@ -113,6 +118,7 @@ func (a *alumniProfile) updateTableName(table string) *alumniProfile {
 	a.MailingAddress = field.NewString(table, "mailing_address")
 	a.Gender = field.NewString(table, "gender")
 	a.Mobile = field.NewString(table, "mobile")
+	a.Email = field.NewString(table, "email")
 	a.Remark = field.NewString(table, "remark")
 	a.Status = field.NewString(table, "status")
 	a.CreatedBy = field.NewUint64(table, "created_by")
@@ -148,8 +154,9 @@ func (a *alumniProfile) GetFieldByName(fieldName string) (field.OrderExpr, bool)
 }
 
 func (a *alumniProfile) fillFieldMap() {
-	a.fieldMap = make(map[string]field.Expr, 22)
+	a.fieldMap = make(map[string]field.Expr, 24)
 	a.fieldMap["id"] = a.ID
+	a.fieldMap["data_domain_id"] = a.DataDomainID
 	a.fieldMap["name"] = a.Name
 	a.fieldMap["grade"] = a.Grade
 	a.fieldMap["class_name"] = a.ClassName
@@ -164,6 +171,7 @@ func (a *alumniProfile) fillFieldMap() {
 	a.fieldMap["mailing_address"] = a.MailingAddress
 	a.fieldMap["gender"] = a.Gender
 	a.fieldMap["mobile"] = a.Mobile
+	a.fieldMap["email"] = a.Email
 	a.fieldMap["remark"] = a.Remark
 	a.fieldMap["status"] = a.Status
 	a.fieldMap["created_by"] = a.CreatedBy

@@ -1,25 +1,29 @@
 package do
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/JunLang-7/sduzg-alumin-platform/server/internal/common"
 )
 
 type AlumniListQuery struct {
-	Page         common.PageQuery
-	Keyword      string
-	Grade        string
-	ClassName    string
-	Cohort       string
-	Counselor    string
-	Mentor       string
-	Major        string
-	TrainingMode string
-	Industry     string
-	WorkUnit     string
-	Position     string
-	Mobile       string
+	Page             common.PageQuery
+	Keyword          string
+	Grade            string
+	ClassName        string
+	Cohort           string
+	Counselor        string
+	Mentor           string
+	Major            string
+	TrainingMode     string
+	Industry         string
+	WorkUnit         string
+	Position         string
+	Mobile           string
+	DataDomainID     *uint64
+	DataDomainIDs    []uint64
+	CanReadSensitive bool
 }
 
 type AlumniEditableProfile struct {
@@ -44,10 +48,12 @@ type AlumniUpdateProfile struct {
 	MailingAddress *string
 	Gender         *string
 	Mobile         *string
+	Email          *string
 	Remark         *string
 }
 
 type AlumniCreateProfile struct {
+	DataDomainID   *uint64
 	Name           string
 	Grade          string
 	ClassName      *string
@@ -62,6 +68,7 @@ type AlumniCreateProfile struct {
 	MailingAddress *string
 	Gender         *string
 	Mobile         *string
+	Email          *string
 	Remark         *string
 	Status         string
 }
@@ -82,6 +89,7 @@ func (p AlumniCreateProfile) Normalize() AlumniCreateProfile {
 	p.MailingAddress = trimEmptyStringPointer(p.MailingAddress)
 	p.Gender = trimEmptyStringPointer(p.Gender)
 	p.Mobile = trimEmptyStringPointer(p.Mobile)
+	p.Email = trimEmptyStringPointer(p.Email)
 	p.Remark = trimEmptyStringPointer(p.Remark)
 	p.Status = strings.TrimSpace(p.Status)
 	if p.Status == "" {
@@ -115,6 +123,7 @@ func (p AlumniUpdateProfile) Normalize() AlumniUpdateProfile {
 	p.MailingAddress = trimStringPointer(p.MailingAddress)
 	p.Gender = trimStringPointer(p.Gender)
 	p.Mobile = trimStringPointer(p.Mobile)
+	p.Email = trimStringPointer(p.Email)
 	p.Remark = trimStringPointer(p.Remark)
 	return p
 }
@@ -138,7 +147,26 @@ func (q AlumniListQuery) Normalize() AlumniListQuery {
 	q.WorkUnit = strings.TrimSpace(q.WorkUnit)
 	q.Position = strings.TrimSpace(q.Position)
 	q.Mobile = strings.TrimSpace(q.Mobile)
+	q.DataDomainIDs = append([]uint64(nil), q.DataDomainIDs...)
+	sort.Slice(q.DataDomainIDs, func(i, j int) bool { return q.DataDomainIDs[i] < q.DataDomainIDs[j] })
+	if len(q.DataDomainIDs) > 1 {
+		writeIndex := 1
+		for _, id := range q.DataDomainIDs[1:] {
+			if id != q.DataDomainIDs[writeIndex-1] {
+				q.DataDomainIDs[writeIndex] = id
+				writeIndex++
+			}
+		}
+		q.DataDomainIDs = q.DataDomainIDs[:writeIndex]
+	}
 	return q
+}
+
+// IsUnfiltered 无过滤条件时返回 true，此时可安全使用缓存计数。
+func (q AlumniListQuery) IsUnfiltered() bool {
+	return q.Keyword == "" && q.Grade == "" && q.ClassName == "" && q.Cohort == "" &&
+		q.Counselor == "" && q.Mentor == "" && q.Major == "" && q.TrainingMode == "" &&
+		q.Industry == "" && q.WorkUnit == "" && q.Position == "" && q.Mobile == ""
 }
 
 func trimStringPointer(value *string) *string {
@@ -148,6 +176,24 @@ func trimStringPointer(value *string) *string {
 
 	trimmed := strings.TrimSpace(*value)
 	return &trimmed
+}
+
+type AlumniDedupKey struct {
+	Name      string
+	Grade     string
+	ClassName string
+	Cohort    string
+	Mobile    string
+}
+
+func (k AlumniDedupKey) Key() string {
+	return strings.Join([]string{
+		strings.TrimSpace(k.Name),
+		strings.TrimSpace(k.Grade),
+		strings.TrimSpace(k.ClassName),
+		strings.TrimSpace(k.Cohort),
+		strings.TrimSpace(k.Mobile),
+	}, "|")
 }
 
 func trimEmptyStringPointer(value *string) *string {

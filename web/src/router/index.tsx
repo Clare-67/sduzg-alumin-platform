@@ -11,7 +11,11 @@ import { ChangePasswordPage } from '../pages/profile/ChangePasswordPage';
 import { AlumniManagementPage } from '../pages/admin/AlumniManagementPage';
 import { DashboardPage } from '../pages/dashboard/DashboardPage';
 import { AdminUsersPage } from '../pages/admin/AdminUsersPage';
+import { AuditHistoryPage } from '../pages/admin/AuditHistoryPage';
 import { PublicHomePage } from '../pages/common/PublicHomePage';
+import { HistoryWikiPage } from '../pages/history/HistoryWikiPage';
+import { HistoryEditorPage } from '../pages/history/HistoryEditorPage';
+import { HistoryReviewPage } from '../pages/admin/HistoryReviewPage';
 
 export const router = createBrowserRouter([
   {
@@ -29,12 +33,12 @@ export const router = createBrowserRouter([
         element: <AppLayout />,
         children: [
           {
-            path: '/alumni',
-            element: <AlumniListPage />,
+            path: '/history',
+            element: <HistoryWikiPage />,
           },
           {
-            path: '/alumni/:id',
-            element: <AlumniDetailPage />,
+            path: '/history/editor',
+            element: <HistoryEditorPage />,
           },
           {
             element: <RequireAuth exactRole="alumni" />,
@@ -70,6 +74,32 @@ export const router = createBrowserRouter([
           {
             path: '/admin/dashboard',
             element: <DashboardPage />,
+          },
+          {
+            path: '/admin/history/reviews',
+            element: <HistoryReviewPage />,
+          },
+          {
+            path: '/alumni',
+            element: <AlumniListPage />,
+          },
+          {
+            path: '/alumni/:id',
+            element: <AlumniDetailPage />,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    element: <RequireAuth minRole="admin" />,
+    children: [
+      {
+        element: <AppLayout />,
+        children: [
+          {
+            path: '/admin/audit/changes',
+            element: <AuditHistoryPage />,
           },
         ],
       },

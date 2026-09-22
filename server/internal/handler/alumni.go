@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -28,13 +29,21 @@ func (h *AlumniHandler) List(c *gin.Context) {
 		return
 	}
 
-	result, err := h.alumni.List(c.Request.Context(), req)
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+
+	result, err := h.alumni.List(c.Request.Context(), req, *access)
 	if err == nil {
 		response.Success(c, result)
 		return
 	}
 
 	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
 	case errors.Is(err, common.ErrDatabaseUnavailable):
 		response.Fail(c, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "database is unavailable")
 	default:
@@ -49,13 +58,21 @@ func (h *AlumniHandler) Detail(c *gin.Context) {
 		return
 	}
 
-	result, err := h.alumni.GetByID(c.Request.Context(), id)
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+
+	result, err := h.alumni.GetByID(c.Request.Context(), id, *access)
 	if err == nil {
 		response.Success(c, result)
 		return
 	}
 
 	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
 	case errors.Is(err, common.ErrAlumniNotFound):
 		response.Fail(c, http.StatusNotFound, response.CodeNotFound, "对应校友不存在")
 	case errors.Is(err, common.ErrDatabaseUnavailable):
@@ -66,7 +83,7 @@ func (h *AlumniHandler) Detail(c *gin.Context) {
 }
 
 func (h *AlumniHandler) Create(c *gin.Context) {
-	userID, ok := middleware.CurrentUserID(c)
+	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {
 		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
 		return
@@ -78,15 +95,21 @@ func (h *AlumniHandler) Create(c *gin.Context) {
 		return
 	}
 
-	result, err := h.alumni.Create(c.Request.Context(), userID, req)
+	result, err := h.alumni.Create(c.Request.Context(), *access, req)
 	if err == nil {
 		response.JSON(c, http.StatusCreated, response.CodeSuccess, "success", result)
 		return
 	}
 
 	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
 	case errors.Is(err, common.ErrInvalidRequest):
 		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "invalid request")
+	case errors.Is(err, common.ErrInvalidDataDomain):
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "数据域无效")
+	case errors.Is(err, common.ErrDataDomainUnavailable):
+		response.Fail(c, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "数据域不可用")
 	case errors.Is(err, common.ErrDatabaseUnavailable):
 		response.Fail(c, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "database is unavailable")
 	default:
@@ -95,7 +118,7 @@ func (h *AlumniHandler) Create(c *gin.Context) {
 }
 
 func (h *AlumniHandler) Update(c *gin.Context) {
-	userID, ok := middleware.CurrentUserID(c)
+	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {
 		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
 		return
@@ -113,13 +136,15 @@ func (h *AlumniHandler) Update(c *gin.Context) {
 		return
 	}
 
-	result, err := h.alumni.Update(c.Request.Context(), userID, id, req)
+	result, err := h.alumni.Update(c.Request.Context(), *access, id, req)
 	if err == nil {
 		response.Success(c, result)
 		return
 	}
 
 	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
 	case errors.Is(err, common.ErrInvalidRequest):
 		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "invalid request")
 	case errors.Is(err, common.ErrAlumniNotFound):
@@ -132,7 +157,7 @@ func (h *AlumniHandler) Update(c *gin.Context) {
 }
 
 func (h *AlumniHandler) Delete(c *gin.Context) {
-	userID, ok := middleware.CurrentUserID(c)
+	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {
 		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
 		return
@@ -144,13 +169,15 @@ func (h *AlumniHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	err = h.alumni.Delete(c.Request.Context(), userID, id)
+	err = h.alumni.Delete(c.Request.Context(), *access, id)
 	if err == nil {
 		response.Success(c, gin.H{"deleted": true})
 		return
 	}
 
 	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
 	case errors.Is(err, common.ErrAlumniNotFound):
 		response.Fail(c, http.StatusNotFound, response.CodeNotFound, "对应校友不存在")
 	case errors.Is(err, common.ErrDatabaseUnavailable):
@@ -160,14 +187,113 @@ func (h *AlumniHandler) Delete(c *gin.Context) {
 	}
 }
 
-func (h *AlumniHandler) Me(c *gin.Context) {
-	userID, ok := middleware.CurrentUserID(c)
+func (h *AlumniHandler) Export(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {
 		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
 		return
 	}
 
-	result, err := h.alumni.GetMe(c.Request.Context(), userID)
+	var req dto.AlumniExportRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "invalid request")
+		return
+	}
+
+	result, err := h.alumni.Export(c.Request.Context(), req, *access)
+	if err == nil {
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", result.Filename))
+		c.Data(http.StatusOK, result.ContentType, result.Data)
+		return
+	}
+
+	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
+	case errors.Is(err, common.ErrDatabaseUnavailable):
+		response.Fail(c, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "database is unavailable")
+	default:
+		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError, "internal server error")
+	}
+}
+
+func (h *AlumniHandler) ExportTemplate(c *gin.Context) {
+	result, err := h.alumni.ExportTemplate(c.Request.Context())
+	if err == nil {
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", result.Filename))
+		c.Data(http.StatusOK, result.ContentType, result.Data)
+		return
+	}
+
+	c.Error(err)
+	response.Fail(c, http.StatusInternalServerError, response.CodeInternalError, "导出模板生成失败")
+}
+
+func (h *AlumniHandler) Import(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+	var dataDomainID *uint64
+	if value, exists := c.GetPostForm("data_domain_id"); exists {
+		id, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || id == 0 {
+			response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "数据域 ID 无效")
+			return
+		}
+		dataDomainID = &id
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "请选择要上传的 Excel 文件")
+		return
+	}
+
+	const maxSize = 20 << 20 // 20 MB
+	if fileHeader.Size > maxSize {
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "文件过大，请上传小于 20MB 的文件")
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError, "无法打开上传文件")
+		return
+	}
+	defer file.Close()
+
+	result, err := h.alumni.Import(c.Request.Context(), *access, dataDomainID, file)
+	if err == nil {
+		response.Success(c, result)
+		return
+	}
+
+	switch {
+	case errors.Is(err, common.ErrPermissionDenied):
+		response.Fail(c, http.StatusForbidden, response.CodeForbidden, "权限不足")
+	case errors.Is(err, common.ErrDataDomainUnavailable):
+		response.Fail(c, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "数据域不可用")
+	case errors.Is(err, common.ErrInvalidDataDomain):
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "数据域无效")
+	case errors.Is(err, common.ErrDatabaseUnavailable):
+		response.Fail(c, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "database is unavailable")
+	case errors.Is(err, common.ErrInvalidRequest):
+		response.Fail(c, http.StatusBadRequest, response.CodeBadRequest, "文件格式不正确，请使用导出的模板文件")
+	default:
+		response.Fail(c, http.StatusInternalServerError, response.CodeInternalError, "服务器内部错误")
+	}
+}
+
+func (h *AlumniHandler) Me(c *gin.Context) {
+	access, ok := middleware.CurrentAccessContext(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
+		return
+	}
+
+	result, err := h.alumni.GetMe(c.Request.Context(), *access)
 	if err == nil {
 		response.Success(c, result)
 		return
@@ -177,7 +303,7 @@ func (h *AlumniHandler) Me(c *gin.Context) {
 }
 
 func (h *AlumniHandler) UpdateMe(c *gin.Context) {
-	userID, ok := middleware.CurrentUserID(c)
+	access, ok := middleware.CurrentAccessContext(c)
 	if !ok {
 		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthorized, "unauthorized")
 		return
@@ -189,7 +315,7 @@ func (h *AlumniHandler) UpdateMe(c *gin.Context) {
 		return
 	}
 
-	result, err := h.alumni.UpdateMe(c.Request.Context(), userID, req)
+	result, err := h.alumni.UpdateMe(c.Request.Context(), *access, req)
 	if err == nil {
 		response.Success(c, result)
 		return

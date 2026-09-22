@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/JunLang-7/sduzg-alumin-platform/server/internal/common"
 	"github.com/JunLang-7/sduzg-alumin-platform/server/internal/do"
@@ -14,11 +15,26 @@ import (
 
 type AlumniStore interface {
 	List(ctx context.Context, query do.AlumniListQuery) ([]*model.AlumniProfile, int64, error)
-	GetByID(ctx context.Context, id uint64) (*model.AlumniProfile, error)
+	ListAll(ctx context.Context, query do.AlumniListQuery) ([]*model.AlumniProfile, error)
+	CountActive(ctx context.Context) (int64, error)
+	FindOnly(ctx context.Context, query do.AlumniListQuery) ([]*model.AlumniProfile, error)
+	GetByID(ctx context.Context, id uint64, dataDomainIDs []uint64) (*model.AlumniProfile, error)
 	Create(ctx context.Context, profile *do.AlumniCreateProfile, operatorID uint64) (*model.AlumniProfile, error)
-	Update(ctx context.Context, id uint64, updaterID uint64, profile do.AlumniUpdateProfile) error
-	Delete(ctx context.Context, id uint64, updaterID uint64) error
+	BatchCreate(ctx context.Context, profiles []do.AlumniCreateProfile, operatorID uint64) error
+	Update(ctx context.Context, id uint64, updaterID uint64, profile do.AlumniUpdateProfile, dataDomainIDs []uint64) error
+	Delete(ctx context.Context, id uint64, updaterID uint64, dataDomainIDs []uint64) error
 	UpdateEditableFields(ctx context.Context, id uint64, updaterID uint64, profile do.AlumniEditableProfile) error
+	FindExistingByDedupKey(ctx context.Context, keys []do.AlumniDedupKey) (map[string]bool, error)
+	FindByMobile(ctx context.Context, mobile string) (*model.AlumniProfile, error)
+	FindByEmail(ctx context.Context, email string) (*model.AlumniProfile, error)
+	UpdateMobile(ctx context.Context, id uint64, mobile string) error
+	UpdateEmail(ctx context.Context, id uint64, email string) error
+}
+
+// AlumniBatchCreator 在批量创建后返回已落库的档案，用于生成可跳转的批量操作历史明细。
+// 该能力作为扩展接口保留，不改变 AlumniStore 的既有调用方契约。
+type AlumniBatchCreator interface {
+	BatchCreateAndReturnProfiles(ctx context.Context, profiles []do.AlumniCreateProfile, operatorID uint64) ([]*model.AlumniProfile, error)
 }
 
 type AlumniRepository struct {
@@ -29,29 +45,24 @@ func NewAlumniRepository(db *gorm.DB) *AlumniRepository {
 	return &AlumniRepository{db: db}
 }
 
-// List 根据查询条件分页获取校友列表
-func (r *AlumniRepository) List(ctx context.Context, listQuery do.AlumniListQuery) ([]*model.AlumniProfile, int64, error) {
-	if r.db == nil {
-		return nil, 0, common.ErrDatabaseUnavailable
+// applyFilters 构建带过滤条件的查询，供 List / ListAll / FindOnly 复用。
+func applyFilters(db *gorm.DB, listQuery do.AlumniListQuery) *gorm.DB {
+	qs := query.Use(db).AlumniProfile
+	if len(listQuery.DataDomainIDs) > 0 {
+		db = db.Where(qs.DataDomainID.In(listQuery.DataDomainIDs...))
 	}
-
-	listQuery = listQuery.Normalize()
-	qs := query.Use(r.db).AlumniProfile
-	db := r.db.WithContext(ctx).
-		Model(&model.AlumniProfile{}).
-		Where(qs.DeletedAt.IsNull()).
-		Where(qs.Status.Eq(common.AlumniStatusActive))
 
 	if listQuery.Keyword != "" {
 		like := "%" + listQuery.Keyword + "%"
-		db = db.Where(field.Or(
+		conditions := []field.Expr{
 			qs.Name.Like(like),
-			qs.WorkUnit.Like(like),
-			qs.Position.Like(like),
 			qs.Mentor.Like(like),
 			qs.Counselor.Like(like),
-			qs.Mobile.Like(like),
-		))
+		}
+		if listQuery.CanReadSensitive {
+			conditions = append(conditions, qs.WorkUnit.Like(like), qs.Position.Like(like), qs.Mobile.Like(like))
+		}
+		db = db.Where(field.Or(conditions...))
 	}
 	if listQuery.Grade != "" {
 		db = db.Where(qs.Grade.Eq(listQuery.Grade))
@@ -77,15 +88,72 @@ func (r *AlumniRepository) List(ctx context.Context, listQuery do.AlumniListQuer
 	if listQuery.Industry != "" {
 		db = db.Where(qs.Industry.Eq(listQuery.Industry))
 	}
-	if listQuery.WorkUnit != "" {
+	if listQuery.CanReadSensitive && listQuery.WorkUnit != "" {
 		db = db.Where(qs.WorkUnit.Like("%" + listQuery.WorkUnit + "%"))
 	}
-	if listQuery.Position != "" {
+	if listQuery.CanReadSensitive && listQuery.Position != "" {
 		db = db.Where(qs.Position.Like("%" + listQuery.Position + "%"))
 	}
-	if listQuery.Mobile != "" {
+	if listQuery.CanReadSensitive && listQuery.Mobile != "" {
 		db = db.Where(qs.Mobile.Eq(listQuery.Mobile))
 	}
+	return db
+}
+
+// CountActive 统计当前活跃校友总数（不含过滤条件）。
+func (r *AlumniRepository) CountActive(ctx context.Context) (int64, error) {
+	if r.db == nil {
+		return 0, common.ErrDatabaseUnavailable
+	}
+
+	qs := query.Use(r.db).AlumniProfile
+	var count int64
+	if err := r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.Status.Eq(common.AlumniStatusActive)).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// FindOnly 仅查询数据行（不统计总数），用于已有缓存计数的场景。
+func (r *AlumniRepository) FindOnly(ctx context.Context, listQuery do.AlumniListQuery) ([]*model.AlumniProfile, error) {
+	if r.db == nil {
+		return nil, common.ErrDatabaseUnavailable
+	}
+
+	listQuery = listQuery.Normalize()
+	qs := query.Use(r.db).AlumniProfile
+	db := r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.Status.Eq(common.AlumniStatusActive))
+	db = applyFilters(db, listQuery)
+
+	var items []*model.AlumniProfile
+	if err := db.
+		Order(qs.ID.Desc()).
+		Offset(listQuery.Page.Offset()).
+		Limit(listQuery.Page.PageSize).
+		Find(&items).
+		Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// List 根据查询条件分页获取校友列表
+func (r *AlumniRepository) List(ctx context.Context, listQuery do.AlumniListQuery) ([]*model.AlumniProfile, int64, error) {
+	if r.db == nil {
+		return nil, 0, common.ErrDatabaseUnavailable
+	}
+
+	listQuery = listQuery.Normalize()
+	qs := query.Use(r.db).AlumniProfile
+	db := r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.Status.Eq(common.AlumniStatusActive))
+	db = applyFilters(db, listQuery)
 
 	var total int64
 	if err := db.Count(&total).Error; err != nil {
@@ -105,16 +173,41 @@ func (r *AlumniRepository) List(ctx context.Context, listQuery do.AlumniListQuer
 	return items, total, nil
 }
 
-// GetByID 根据 ID 获取校友详情
-func (r *AlumniRepository) GetByID(ctx context.Context, id uint64) (*model.AlumniProfile, error) {
+// ListAll 根据查询条件获取所有校友记录（不分页），用于导出。
+func (r *AlumniRepository) ListAll(ctx context.Context, listQuery do.AlumniListQuery) ([]*model.AlumniProfile, error) {
+	if r.db == nil {
+		return nil, common.ErrDatabaseUnavailable
+	}
+
+	listQuery = listQuery.Normalize()
+	qs := query.Use(r.db).AlumniProfile
+	db := r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.Status.Eq(common.AlumniStatusActive))
+	db = applyFilters(db, listQuery)
+
+	var items []*model.AlumniProfile
+	if err := db.Order(qs.ID.Desc()).Find(&items).Error; err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
+// GetByID 根据 ID 和可访问数据域获取校友详情。
+func (r *AlumniRepository) GetByID(ctx context.Context, id uint64, dataDomainIDs []uint64) (*model.AlumniProfile, error) {
 	if r.db == nil {
 		return nil, common.ErrDatabaseUnavailable
 	}
 
 	qs := query.Use(r.db).AlumniProfile
 	var item model.AlumniProfile
-	err := r.db.WithContext(ctx).
-		Where(qs.ID.Eq(id), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive)).
+	db := r.db.WithContext(ctx).
+		Where(qs.ID.Eq(id), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive))
+	if len(dataDomainIDs) > 0 {
+		db = db.Where(qs.DataDomainID.In(dataDomainIDs...))
+	}
+	err := db.
 		First(&item).
 		Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -135,8 +228,22 @@ func (r *AlumniRepository) Create(ctx context.Context, profile *do.AlumniCreateP
 	if profile == nil {
 		return nil, common.ErrInvalidRequest
 	}
+	dataDomainID := uint64(0)
+	if profile.DataDomainID != nil {
+		dataDomainID = *profile.DataDomainID
+		if err := r.validateActiveDataDomainIDs(ctx, []uint64{dataDomainID}); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		dataDomainID, err = r.defaultMPADataDomainID(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	item := &model.AlumniProfile{
+		DataDomainID:   dataDomainID,
 		Name:           profile.Name,
 		Grade:          profile.Grade,
 		ClassName:      profile.ClassName,
@@ -151,6 +258,7 @@ func (r *AlumniRepository) Create(ctx context.Context, profile *do.AlumniCreateP
 		MailingAddress: profile.MailingAddress,
 		Gender:         profile.Gender,
 		Mobile:         profile.Mobile,
+		Email:          profile.Email,
 		Remark:         profile.Remark,
 		Status:         profile.Status,
 		CreatedBy:      &operatorID,
@@ -164,8 +272,178 @@ func (r *AlumniRepository) Create(ctx context.Context, profile *do.AlumniCreateP
 	return item, nil
 }
 
+// BatchCreate 批量新增校友档案。
+func (r *AlumniRepository) BatchCreate(ctx context.Context, profiles []do.AlumniCreateProfile, operatorID uint64) error {
+	_, err := r.BatchCreateAndReturnProfiles(ctx, profiles, operatorID)
+	return err
+}
+
+// BatchCreateAndReturnProfiles 批量新增校友档案并返回包含数据库 ID 的记录。
+func (r *AlumniRepository) BatchCreateAndReturnProfiles(ctx context.Context, profiles []do.AlumniCreateProfile, operatorID uint64) ([]*model.AlumniProfile, error) {
+	if r.db == nil {
+		return nil, common.ErrDatabaseUnavailable
+	}
+	if len(profiles) == 0 {
+		return nil, nil
+	}
+	dataDomainIDs := make([]uint64, len(profiles))
+	needsDefaultDomain := false
+	for i, profile := range profiles {
+		if profile.DataDomainID == nil {
+			needsDefaultDomain = true
+			continue
+		}
+		dataDomainIDs[i] = *profile.DataDomainID
+	}
+	if needsDefaultDomain {
+		defaultDomainID, err := r.defaultMPADataDomainID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for i := range dataDomainIDs {
+			if dataDomainIDs[i] == 0 {
+				dataDomainIDs[i] = defaultDomainID
+			}
+		}
+	}
+	if err := r.validateActiveDataDomainIDs(ctx, dataDomainIDs); err != nil {
+		return nil, err
+	}
+
+	items := make([]*model.AlumniProfile, 0, len(profiles))
+	for i := range profiles {
+		p := profiles[i]
+		items = append(items, &model.AlumniProfile{
+			DataDomainID:   dataDomainIDs[i],
+			Name:           p.Name,
+			Grade:          p.Grade,
+			ClassName:      p.ClassName,
+			Cohort:         p.Cohort,
+			Counselor:      p.Counselor,
+			Mentor:         p.Mentor,
+			Major:          p.Major,
+			TrainingMode:   p.TrainingMode,
+			Industry:       p.Industry,
+			WorkUnit:       p.WorkUnit,
+			Position:       p.Position,
+			MailingAddress: p.MailingAddress,
+			Gender:         p.Gender,
+			Mobile:         p.Mobile,
+			Email:          p.Email,
+			Remark:         p.Remark,
+			Status:         p.Status,
+			CreatedBy:      &operatorID,
+			UpdatedBy:      &operatorID,
+		})
+	}
+
+	if err := r.db.WithContext(ctx).CreateInBatches(items, 100).Error; err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// validateActiveDataDomainIDs 校验目标数据域存在且处于可用状态。
+func (r *AlumniRepository) validateActiveDataDomainIDs(ctx context.Context, ids []uint64) error {
+	uniqueIDs := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			return common.ErrInvalidDataDomain
+		}
+		uniqueIDs[id] = struct{}{}
+	}
+	if len(uniqueIDs) == 0 {
+		return common.ErrInvalidDataDomain
+	}
+
+	uniqueIDList := make([]uint64, 0, len(uniqueIDs))
+	for id := range uniqueIDs {
+		uniqueIDList = append(uniqueIDList, id)
+	}
+	qs := query.Use(r.db).DataDomain
+	var domains []model.DataDomain
+	if err := r.db.WithContext(ctx).
+		Where(qs.ID.In(uniqueIDList...), qs.Status.Eq(common.DataDomainStatusActive)).
+		Find(&domains).
+		Error; err != nil {
+		return err
+	}
+	if len(domains) != len(uniqueIDList) {
+		return common.ErrInvalidDataDomain
+	}
+	return nil
+}
+
+// defaultMPADataDomainID 为当前尚未传入数据域的历史写入路径提供兼容默认值。
+// 后续数据域授权功能会在调用仓储前显式校验并传入目标数据域。
+func (r *AlumniRepository) defaultMPADataDomainID(ctx context.Context) (uint64, error) {
+	qs := query.Use(r.db).DataDomain
+	var domain model.DataDomain
+	err := r.db.WithContext(ctx).
+		Where(qs.Code.Eq(common.DataDomainMPA), qs.Status.Eq(common.DataDomainStatusActive)).
+		First(&domain).
+		Error
+	if err != nil {
+		return 0, mapDataDomainLookupError(err)
+	}
+	return domain.ID, nil
+}
+
+// mapDataDomainLookupError 将不可用的数据域转换为明确的系统配置错误。
+func mapDataDomainLookupError(err error) error {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return common.ErrDataDomainUnavailable
+	}
+	return err
+}
+
+// FindExistingByDedupKey 批量查询已存在的 (姓名, 年级, 班级, 届数, 手机号) 组合，返回 key 集合用于去重。
+func (r *AlumniRepository) FindExistingByDedupKey(ctx context.Context, keys []do.AlumniDedupKey) (map[string]bool, error) {
+	result := make(map[string]bool, len(keys))
+	if r.db == nil || len(keys) == 0 {
+		return result, nil
+	}
+
+	qs := query.Use(r.db).AlumniProfile
+	db := r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.DeletedAt.IsNull()).
+		Where(qs.Status.Eq(common.AlumniStatusActive))
+
+	cond := "(name = ? AND grade = ? AND COALESCE(class_name, '') = ? AND COALESCE(cohort, '') = ? AND COALESCE(mobile, '') = ?)"
+	var parts []string
+	var args []any
+	for _, k := range keys {
+		parts = append(parts, cond)
+		args = append(args, k.Name, k.Grade, k.ClassName, k.Cohort, strings.TrimSpace(k.Mobile))
+	}
+	db = db.Where("("+strings.Join(parts, " OR ")+")", args...)
+
+	var existing []model.AlumniProfile
+	if err := db.Select("name, grade, class_name, cohort, mobile").Find(&existing).Error; err != nil {
+		return nil, err
+	}
+
+	for _, e := range existing {
+		cn := ""
+		if e.ClassName != nil {
+			cn = *e.ClassName
+		}
+		ch := ""
+		if e.Cohort != nil {
+			ch = *e.Cohort
+		}
+		mb := ""
+		if e.Mobile != nil {
+			mb = *e.Mobile
+		}
+		result[do.AlumniDedupKey{Name: e.Name, Grade: e.Grade, ClassName: cn, Cohort: ch, Mobile: mb}.Key()] = true
+	}
+	return result, nil
+}
+
 // Update 编辑管理员可维护的校友档案字段。
-func (r *AlumniRepository) Update(ctx context.Context, id uint64, updaterID uint64, profile do.AlumniUpdateProfile) error {
+func (r *AlumniRepository) Update(ctx context.Context, id uint64, updaterID uint64, profile do.AlumniUpdateProfile, dataDomainIDs []uint64) error {
 	if r.db == nil {
 		return common.ErrDatabaseUnavailable
 	}
@@ -213,13 +491,20 @@ func (r *AlumniRepository) Update(ctx context.Context, id uint64, updaterID uint
 	if profile.Mobile != nil {
 		updates[qs.Mobile.ColumnName().String()] = nullableString(*profile.Mobile)
 	}
+	if profile.Email != nil {
+		updates[qs.Email.ColumnName().String()] = nullableString(*profile.Email)
+	}
 	if profile.Remark != nil {
 		updates[qs.Remark.ColumnName().String()] = nullableString(*profile.Remark)
 	}
 
-	result := r.db.WithContext(ctx).
+	db := r.db.WithContext(ctx).
 		Model(&model.AlumniProfile{}).
-		Where(qs.ID.Eq(id), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive)).
+		Where(qs.ID.Eq(id), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive))
+	if len(dataDomainIDs) > 0 {
+		db = db.Where(qs.DataDomainID.In(dataDomainIDs...))
+	}
+	result := db.
 		Updates(updates)
 	if result.Error != nil {
 		return result.Error
@@ -239,7 +524,7 @@ func nullableString(value string) any {
 }
 
 // Delete 软删除校友档案。
-func (r *AlumniRepository) Delete(ctx context.Context, id uint64, updaterID uint64) error {
+func (r *AlumniRepository) Delete(ctx context.Context, id uint64, updaterID uint64, dataDomainIDs []uint64) error {
 	if r.db == nil {
 		return common.ErrDatabaseUnavailable
 	}
@@ -250,8 +535,12 @@ func (r *AlumniRepository) Delete(ctx context.Context, id uint64, updaterID uint
 			qs.Status.ColumnName().String():    common.AlumniStatusDeleted,
 			qs.UpdatedBy.ColumnName().String(): updaterID,
 		}
-		updateResult := tx.Model(&model.AlumniProfile{}).
-			Where(qs.ID.Eq(id), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive)).
+		updateQuery := tx.Model(&model.AlumniProfile{}).
+			Where(qs.ID.Eq(id), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive))
+		if len(dataDomainIDs) > 0 {
+			updateQuery = updateQuery.Where(qs.DataDomainID.In(dataDomainIDs...))
+		}
+		updateResult := updateQuery.
 			Updates(updates)
 		if updateResult.Error != nil {
 			return updateResult.Error
@@ -260,7 +549,11 @@ func (r *AlumniRepository) Delete(ctx context.Context, id uint64, updaterID uint
 			return common.ErrAlumniNotFound
 		}
 
-		deleteResult := tx.Where(qs.ID.Eq(id), qs.DeletedAt.IsNull()).Delete(&model.AlumniProfile{})
+		deleteQuery := tx.Where(qs.ID.Eq(id), qs.DeletedAt.IsNull())
+		if len(dataDomainIDs) > 0 {
+			deleteQuery = deleteQuery.Where(qs.DataDomainID.In(dataDomainIDs...))
+		}
+		deleteResult := deleteQuery.Delete(&model.AlumniProfile{})
 		if deleteResult.Error != nil {
 			return deleteResult.Error
 		}
@@ -312,4 +605,75 @@ func (r *AlumniRepository) UpdateEditableFields(ctx context.Context, id uint64, 
 	}
 
 	return nil
+}
+
+// FindByMobile 通过手机号查找校友档案
+func (r *AlumniRepository) FindByMobile(ctx context.Context, mobile string) (*model.AlumniProfile, error) {
+	if r.db == nil {
+		return nil, common.ErrDatabaseUnavailable
+	}
+
+	var profile model.AlumniProfile
+	qs := query.Use(r.db).AlumniProfile
+	err := r.db.WithContext(ctx).
+		Where(qs.Mobile.Eq(mobile), qs.DeletedAt.IsNull(), qs.Status.Eq(common.AlumniStatusActive)).
+		First(&profile).
+		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, common.ErrAlumniNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &profile, nil
+}
+
+// FindByEmail 通过邮箱查找校友档案（大小写不敏感）
+func (r *AlumniRepository) FindByEmail(ctx context.Context, email string) (*model.AlumniProfile, error) {
+	if r.db == nil {
+		return nil, common.ErrDatabaseUnavailable
+	}
+
+	lowerEmail := strings.ToLower(email)
+	var profile model.AlumniProfile
+	qs := query.Use(r.db).AlumniProfile
+	err := r.db.WithContext(ctx).
+		Where(qs.Email.Lower().Eq(lowerEmail), qs.Status.Eq(common.AlumniStatusActive)).
+		First(&profile).
+		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, common.ErrAlumniNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &profile, nil
+}
+
+// UpdateMobile 更新校友手机号
+func (r *AlumniRepository) UpdateMobile(ctx context.Context, id uint64, mobile string) error {
+	if r.db == nil {
+		return common.ErrDatabaseUnavailable
+	}
+	qs := query.Use(r.db).AlumniProfile
+	return r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.ID.Eq(id)).
+		Update(qs.Mobile.ColumnName().String(), mobile).
+		Error
+}
+
+// UpdateEmail 更新校友邮箱（小写）
+func (r *AlumniRepository) UpdateEmail(ctx context.Context, id uint64, email string) error {
+	if r.db == nil {
+		return common.ErrDatabaseUnavailable
+	}
+	qs := query.Use(r.db).AlumniProfile
+	return r.db.WithContext(ctx).
+		Model(&model.AlumniProfile{}).
+		Where(qs.ID.Eq(id)).
+		Update(qs.Email.ColumnName().String(), strings.ToLower(email)).
+		Error
 }

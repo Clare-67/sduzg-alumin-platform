@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChartOutlined,
+  BookOutlined,
+  AuditOutlined,
   IdcardOutlined,
   LogoutOutlined,
   SearchOutlined,
@@ -12,7 +14,7 @@ import { Avatar, Dropdown, Input, Layout, Menu, Space, Typography } from 'antd';
 import type { MenuProps } from 'antd';
 import logoUrl from '../assets/pspa-logo.png';
 import { useAuthStore } from '../store/authStore';
-import { getDefaultPath, hasRole } from '../utils/permissions';
+import { getDefaultPath, getRoleLabel, hasRole } from '../utils/permissions';
 
 const { Content } = Layout;
 const { Text } = Typography;
@@ -25,16 +27,15 @@ export function AppLayout() {
   const [search, setSearch] = useState('');
 
   const menuItems = useMemo<MenuProps['items']>(() => {
-    const items: MenuProps['items'] = [
-      {
-        key: '/alumni',
-        icon: <TeamOutlined />,
-        label: '校友服务',
-      },
-    ];
+    const items: MenuProps['items'] = [];
 
     if (hasRole(user, 'admin')) {
       items.push(
+        {
+          key: '/alumni',
+          icon: <TeamOutlined />,
+          label: '校友服务',
+        },
         {
           key: '/admin/dashboard',
           icon: <BarChartOutlined />,
@@ -45,6 +46,16 @@ export function AppLayout() {
           icon: <TeamOutlined />,
           label: '校友管理',
         },
+        {
+          key: '/admin/audit/changes',
+          icon: <AuditOutlined />,
+          label: '操作历史',
+        },
+        {
+          key: '/admin/history/reviews',
+          icon: <BookOutlined />,
+          label: '院史待审',
+        },
       );
     }
 
@@ -54,6 +65,10 @@ export function AppLayout() {
         icon: <IdcardOutlined />,
         label: '用户中心',
       });
+    }
+
+    if (user) {
+      items.push({ key: '/history', icon: <BookOutlined />, label: '院史共编' });
     }
 
     if (hasRole(user, 'super_admin')) {
@@ -77,8 +92,17 @@ export function AppLayout() {
     if (location.pathname.startsWith('/admin/alumni')) {
       return ['/admin/alumni'];
     }
+    if (location.pathname.startsWith('/admin/audit')) {
+      return ['/admin/audit/changes'];
+    }
+    if (location.pathname.startsWith('/admin/history')) {
+      return ['/admin/history/reviews'];
+    }
     if (location.pathname.startsWith('/profile')) {
       return ['/profile'];
+    }
+    if (location.pathname.startsWith('/history')) {
+      return ['/history'];
     }
     return ['/alumni'];
   }, [location.pathname]);
@@ -105,7 +129,7 @@ export function AppLayout() {
 
   const submitSearch = () => {
     const keyword = search.trim();
-    navigate(keyword ? `/alumni?keyword=${encodeURIComponent(keyword)}` : '/alumni');
+    navigate(keyword ? `/admin/alumni?keyword=${encodeURIComponent(keyword)}` : '/admin/alumni');
   };
 
   const openHome = () => {
@@ -125,22 +149,24 @@ export function AppLayout() {
             </span>
           </button>
           <div className="site-actions">
-            <Input.Search
-              className="site-search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              onSearch={submitSearch}
-              enterButton="搜索"
-              prefix={<SearchOutlined />}
-              placeholder="搜索..."
-            />
+            {hasRole(user, 'admin') ? (
+              <Input.Search
+                className="site-search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onSearch={submitSearch}
+                enterButton="搜索"
+                prefix={<SearchOutlined />}
+                placeholder="搜索..."
+              />
+            ) : null}
             <Dropdown menu={{ items: userMenu }} trigger={['click']}>
               <button className="user-menu" type="button">
                 <Space size={8}>
                   <Avatar size={30} icon={<UserOutlined />} />
                   <span className="user-meta">
                     <Text strong>{user?.real_name || user?.account}</Text>
-                    <Text>{user?.role}</Text>
+                    <Text>{getRoleLabel(user?.role)}</Text>
                   </span>
                 </Space>
               </button>

@@ -10,6 +10,13 @@ export default defineConfig({
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
       },
+      '/sdu-alumni-files': {
+        target: 'http://127.0.0.1:9000',
+        changeOrigin: true,
+      },
     },
+  },
+  test: {
+    exclude: ['**/node_modules/**', '**/dist/**', 'e2e/**'],
   },
 });

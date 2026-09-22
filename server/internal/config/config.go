@@ -4,9 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/spf13/viper"
 )
 
@@ -16,11 +19,16 @@ const (
 )
 
 type Config struct {
-	App      AppConfig
-	Server   ServerConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	Auth     AuthConfig
+	App       AppConfig
+	Server    ServerConfig
+	Database  DatabaseConfig
+	Redis     RedisConfig
+	Auth      AuthConfig
+	Storage   StorageConfig
+	SMS       SMSConfig
+	Email     EmailConfig
+	RateLimit RateLimitConfig
+	CORS      CORSConfig
 }
 
 type AppConfig struct {
@@ -33,6 +41,7 @@ type ServerConfig struct {
 	Port              int
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
+	TrustedProxies    []string
 }
 
 func (c ServerConfig) Address() string {
@@ -69,18 +78,71 @@ type AuthConfig struct {
 	AccessTokenTTL time.Duration
 }
 
-func (c DatabaseConfig) DSN() string {
-	return fmt.Sprintf(
-		"%s:%s@tcp(%s)/%s?%s",
-		c.User,
-		c.Password,
-		net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
-		c.Name,
-		c.Params,
-	)
+type StorageConfig struct {
+	Enabled        bool
+	Endpoint       string
+	AccessKey      string
+	SecretKey      string
+	Bucket         string
+	UseSSL         bool
+	PublicEndpoint string // 浏览器可访问的公开地址，用于预签名 URL；为空时使用 Endpoint
 }
 
-func Load() Config {
+type SMSConfig struct {
+	Enabled    bool
+	SecretID   string
+	SecretKey  string
+	Region     string
+	AppID      string
+	SignName   string
+	TemplateID string
+	Endpoint   string
+}
+
+type EmailConfig struct {
+	Enabled  bool
+	Host     string
+	Port     int
+	Username string
+	Password string
+	FromName string
+}
+
+type RateLimitConfig struct {
+	Enabled       bool
+	GlobalRPM     int
+	AuthRPM       int
+	VerifyCodeRPM int
+	AdminRPM      int
+}
+
+type CORSConfig struct {
+	Enabled        bool
+	AllowedOrigins []string
+}
+
+func (c DatabaseConfig) DSN() string {
+	cfg := mysql.NewConfig()
+	cfg.User = c.User
+	cfg.Passwd = c.Password
+	cfg.Net = "tcp"
+	cfg.Addr = net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
+	cfg.DBName = c.Name
+	if c.Params != "" {
+		params, _ := url.ParseQuery(c.Params)
+		if len(params) > 0 && cfg.Params == nil {
+			cfg.Params = make(map[string]string, len(params))
+		}
+		for k, v := range params {
+			if len(v) > 0 {
+				cfg.Params[k] = v[0]
+			}
+		}
+	}
+	return cfg.FormatDSN()
+}
+
+func Load() (Config, error) {
 	v := viper.New()
 	setDefaults(v)
 
@@ -88,14 +150,16 @@ func Load() Config {
 	v.SetConfigType("env")
 	v.AddConfigPath(".")
 	v.AddConfigPath("./server")
-	v.AutomaticEnv()
-
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if !errors.As(err, &notFound) {
-			panic(fmt.Errorf("failed to read config: %w", err))
+			return Config{}, fmt.Errorf("failed to read config: %w", err)
 		}
 	}
+
+	// AutomaticEnv must be called after ReadInConfig so that environment
+	// variables take precedence over .env file values.
+	v.AutomaticEnv()
 
 	cfg := Config{
 		App: AppConfig{
@@ -107,6 +171,7 @@ func Load() Config {
 			Port:              v.GetInt("SERVER_PORT"),
 			ReadHeaderTimeout: v.GetDuration("SERVER_READ_HEADER_TIMEOUT"),
 			ShutdownTimeout:   v.GetDuration("SERVER_SHUTDOWN_TIMEOUT"),
+			TrustedProxies:    splitCSV(v.GetString("SERVER_TRUSTED_PROXIES")),
 		},
 		Database: DatabaseConfig{
 			Enabled:         v.GetBool("DB_ENABLED"),
@@ -135,13 +200,47 @@ func Load() Config {
 			JWTSecret:      v.GetString("AUTH_JWT_SECRET"),
 			AccessTokenTTL: v.GetDuration("AUTH_ACCESS_TOKEN_TTL"),
 		},
+		Storage: StorageConfig{
+			Enabled:        v.GetBool("STORAGE_ENABLED"),
+			Endpoint:       v.GetString("STORAGE_ENDPOINT"),
+			AccessKey:      v.GetString("STORAGE_ACCESS_KEY"),
+			SecretKey:      v.GetString("STORAGE_SECRET_KEY"),
+			Bucket:         v.GetString("STORAGE_BUCKET"),
+			UseSSL:         v.GetBool("STORAGE_USE_SSL"),
+			PublicEndpoint: v.GetString("STORAGE_PUBLIC_ENDPOINT"),
+		},
+		SMS: SMSConfig{
+			Enabled:    v.GetBool("SMS_ENABLED"),
+			SecretID:   v.GetString("SMS_TENCENT_SECRET_ID"),
+			SecretKey:  v.GetString("SMS_TENCENT_SECRET_KEY"),
+			Region:     v.GetString("SMS_TENCENT_REGION"),
+			AppID:      v.GetString("SMS_TENCENT_APP_ID"),
+			SignName:   v.GetString("SMS_TENCENT_SIGN_NAME"),
+			TemplateID: v.GetString("SMS_TENCENT_TEMPLATE_ID"),
+			Endpoint:   v.GetString("SMS_TENCENT_ENDPOINT"),
+		},
+		Email: EmailConfig{
+			Enabled:  v.GetBool("EMAIL_ENABLED"),
+			Host:     v.GetString("EMAIL_HOST"),
+			Port:     v.GetInt("EMAIL_PORT"),
+			Username: v.GetString("EMAIL_USERNAME"),
+			Password: v.GetString("EMAIL_PASSWORD"),
+			FromName: v.GetString("EMAIL_FROM_NAME"),
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:       v.GetBool("RATE_LIMIT_ENABLED"),
+			GlobalRPM:     v.GetInt("RATE_LIMIT_GLOBAL_RPM"),
+			AuthRPM:       v.GetInt("RATE_LIMIT_AUTH_RPM"),
+			VerifyCodeRPM: v.GetInt("RATE_LIMIT_VERIFY_CODE_RPM"),
+			AdminRPM:      v.GetInt("RATE_LIMIT_ADMIN_RPM"),
+		},
+		CORS: CORSConfig{
+			Enabled:        v.GetBool("CORS_ENABLED"),
+			AllowedOrigins: splitCSV(v.GetString("CORS_ALLOWED_ORIGINS")),
+		},
 	}
 
-	if cfg.Auth.JWTSecret == "dev-only-change-me" {
-		panic("AUTH_JWT_SECRET is still the default value 'dev-only-change-me' — refusing to start. Set AUTH_JWT_SECRET in your environment or .env file.")
-	}
-
-	return cfg
+	return cfg, nil
 }
 
 func setDefaults(v *viper.Viper) {
@@ -151,6 +250,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("SERVER_PORT", 8080)
 	v.SetDefault("SERVER_READ_HEADER_TIMEOUT", 5*time.Second)
 	v.SetDefault("SERVER_SHUTDOWN_TIMEOUT", 10*time.Second)
+	v.SetDefault("SERVER_TRUSTED_PROXIES", "")
 	v.SetDefault("DB_ENABLED", false)
 	v.SetDefault("DB_HOST", "127.0.0.1")
 	v.SetDefault("DB_PORT", 3306)
@@ -172,4 +272,44 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("REDIS_WRITE_TIMEOUT", 3*time.Second)
 	v.SetDefault("AUTH_JWT_SECRET", "dev-only-change-me")
 	v.SetDefault("AUTH_ACCESS_TOKEN_TTL", 24*time.Hour)
+	v.SetDefault("STORAGE_ENABLED", false)
+	v.SetDefault("STORAGE_ENDPOINT", "127.0.0.1:9000")
+	v.SetDefault("STORAGE_ACCESS_KEY", "minioadmin")
+	v.SetDefault("STORAGE_SECRET_KEY", "minioadmin123")
+	v.SetDefault("STORAGE_BUCKET", "sdu-alumni-files")
+	v.SetDefault("STORAGE_USE_SSL", false)
+	v.SetDefault("STORAGE_PUBLIC_ENDPOINT", "")
+	v.SetDefault("SMS_ENABLED", false)
+	v.SetDefault("SMS_TENCENT_SECRET_ID", "")
+	v.SetDefault("SMS_TENCENT_SECRET_KEY", "")
+	v.SetDefault("SMS_TENCENT_REGION", "ap-beijing")
+	v.SetDefault("SMS_TENCENT_APP_ID", "")
+	v.SetDefault("SMS_TENCENT_SIGN_NAME", "山东大学政管学院")
+	v.SetDefault("SMS_TENCENT_TEMPLATE_ID", "")
+	v.SetDefault("SMS_TENCENT_ENDPOINT", "sms.tencentcloudapi.com")
+	v.SetDefault("EMAIL_ENABLED", false)
+	v.SetDefault("EMAIL_HOST", "")
+	v.SetDefault("EMAIL_PORT", 465)
+	v.SetDefault("EMAIL_USERNAME", "")
+	v.SetDefault("EMAIL_PASSWORD", "")
+	v.SetDefault("EMAIL_FROM_NAME", "山东大学政管学院")
+	v.SetDefault("RATE_LIMIT_ENABLED", false)
+	v.SetDefault("RATE_LIMIT_GLOBAL_RPM", 120)
+	v.SetDefault("RATE_LIMIT_AUTH_RPM", 10)
+	v.SetDefault("RATE_LIMIT_VERIFY_CODE_RPM", 3)
+	v.SetDefault("RATE_LIMIT_ADMIN_RPM", 30)
+	v.SetDefault("CORS_ENABLED", false)
+	v.SetDefault("CORS_ALLOWED_ORIGINS", "")
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
 }

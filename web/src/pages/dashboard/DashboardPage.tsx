@@ -12,7 +12,13 @@ import { Button, Input, Modal, Segmented, Spin, message } from 'antd';
 import { alumniApi } from '../../api/alumni';
 import { dashboardApi } from '../../api/dashboard';
 import logoUrl from '../../assets/pspa-logo.png';
+import { useAuthStore } from '../../store/authStore';
 import type { AlumniProfile } from '../../types/alumni';
+import { canReadSensitive } from '../../utils/access';
+import { AlumniDetailModal } from './AlumniDetailModal';
+import { enrichAlumniMailingAddresses, loadAllAlumni } from './dashboardAlumni';
+import { DistributionAlumniModal } from './DistributionAlumniModal';
+import { RegionIndustryExplorer, type MapMode } from './RegionIndustryExplorer';
 import type {
   DashboardDimension,
   DashboardOverview,
@@ -22,12 +28,24 @@ import type {
 const dimensions: Array<{ label: string; value: DashboardDimension }> = [
   { label: '年级', value: 'grade' },
   { label: '班级', value: 'class_name' },
-  { label: '届数', value: 'cohort' },
+  { label: '毕业率', value: 'cohort' },
   { label: '性别', value: 'gender' },
   { label: '专业', value: 'major' },
   { label: '培养方式', value: 'training_mode' },
   { label: '行业', value: 'industry' },
 ];
+
+const FEED_WINDOW_SIZE = 20;
+
+const dimensionFields: Record<DashboardDimension, keyof AlumniProfile> = {
+  grade: 'grade',
+  class_name: 'class_name',
+  cohort: 'cohort',
+  gender: 'gender',
+  major: 'major',
+  training_mode: 'training_mode',
+  industry: 'industry',
+};
 
 const emptyOverview: DashboardOverview = {
   total_alumni: 0,
@@ -57,8 +75,18 @@ interface DataScreenPanelProps {
   subtitle?: string;
   className?: string;
   loading?: boolean;
+  expandable?: boolean;
   extra?: ReactNode;
   children: (expanded: boolean) => ReactNode;
+}
+
+interface ChartDistributionItem extends DistributionItem {
+  rawValue?: number;
+  graduationRate?: number;
+  rateUnavailable?: boolean;
+  admissionGrade?: string;
+  admissionCount?: number;
+  cohortTotal?: number;
 }
 
 function toPercent(value: number) {
@@ -67,6 +95,10 @@ function toPercent(value: number) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat('zh-CN').format(value);
+}
+
+function formatPercentValue(value?: number) {
+  return (Number.isFinite(value) ? Number(value).toFixed(2) : '0.00') + '%';
 }
 
 function formatText(value?: string) {
@@ -84,11 +116,73 @@ function sortByNumericName(items: DistributionItem[]) {
   });
 }
 
+function extractYear(value?: string) {
+  const match = value?.match(/(?:^|[^\d])((?:19|20)\d{2})(?:[^\d]|$)/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number.parseInt(match[1], 10);
+  const maxReasonableYear = new Date().getFullYear() + 10;
+  return year >= 1990 && year <= maxReasonableYear ? year : null;
+}
+
+function toGraduationRateDistribution(
+  items: DistributionItem[],
+  alumni: AlumniProfile[],
+): ChartDistributionItem[] {
+  const currentYear = new Date().getFullYear();
+  const admissionCounts = new Map<number, number>();
+  const normalGraduationCounts = new Map<number, number>();
+
+  alumni.forEach((profile) => {
+    const gradeYear = extractYear(profile.grade);
+    const cohortYear = extractYear(profile.cohort);
+    if (!gradeYear || !cohortYear) {
+      return;
+    }
+    admissionCounts.set(gradeYear, (admissionCounts.get(gradeYear) || 0) + 1);
+
+    if (cohortYear - gradeYear === 3) {
+      normalGraduationCounts.set(cohortYear, (normalGraduationCounts.get(cohortYear) || 0) + 1);
+    }
+  });
+
+  return items
+    .map((item) => {
+      const cohortYear = extractYear(item.name);
+      const admissionYear = cohortYear ? cohortYear - 3 : null;
+      const admissionCount = admissionYear ? admissionCounts.get(admissionYear) || 0 : 0;
+      const normalGraduates = cohortYear ? normalGraduationCounts.get(cohortYear) || 0 : 0;
+
+      const graduationRate = admissionCount
+        ? Number(((normalGraduates / admissionCount) * 100).toFixed(2))
+        : 0;
+      const rateUnavailable = !admissionCount;
+
+      return {
+        ...item,
+        admissionGrade: admissionYear ? String(admissionYear) : undefined,
+        admissionCount,
+        cohortTotal: item.value,
+        graduationRate,
+        rateUnavailable,
+        rawValue: normalGraduates,
+        value: graduationRate,
+      };
+    })
+    .filter((item) => {
+      const cohortYear = extractYear(item.name);
+      return Boolean(cohortYear && cohortYear < currentYear);
+    });
+}
+
 function DataScreenPanel({
   title,
   subtitle,
   className,
   loading,
+  expandable = true,
   extra,
   children,
 }: DataScreenPanelProps) {
@@ -104,38 +198,42 @@ function DataScreenPanel({
         </div>
         <div className="data-screen-panel-actions">
           {extra}
-          <button
-            type="button"
-            className="data-screen-icon-button"
-            aria-label={`放大查看${title}`}
-            onClick={() => setExpanded(true)}
-          >
-            <ArrowsAltOutlined />
-          </button>
+          {expandable ? (
+            <button
+              type="button"
+              className="data-screen-icon-button"
+              aria-label={`放大查看${title}`}
+              onClick={() => setExpanded(true)}
+            >
+              <ArrowsAltOutlined />
+            </button>
+          ) : null}
         </div>
       </div>
       <div className="data-screen-panel-body">
         {loading ? <Spin className="data-screen-spin" /> : children(false)}
       </div>
-      <Modal
-        centered
-        footer={null}
-        open={expanded}
-        width="min(1180px, 94vw)"
-        className="data-screen-modal"
-        title={title}
-        onCancel={() => setExpanded(false)}
-        afterOpenChange={(open) => {
-          if (!open) {
-            setModalReady(false);
-            return;
-          }
-          window.requestAnimationFrame(() => setModalReady(true));
-        }}
-        destroyOnHidden
-      >
-        {modalReady ? <div className="data-screen-expanded-body">{children(true)}</div> : null}
-      </Modal>
+      {expandable ? (
+        <Modal
+          centered
+          footer={null}
+          open={expanded}
+          width="min(1180px, 94vw)"
+          className="data-screen-modal"
+          title={title}
+          onCancel={() => setExpanded(false)}
+          afterOpenChange={(open) => {
+            if (!open) {
+              setModalReady(false);
+              return;
+            }
+            window.requestAnimationFrame(() => setModalReady(true));
+          }}
+          destroyOnHidden
+        >
+          {modalReady ? <div className="data-screen-expanded-body">{children(true)}</div> : null}
+        </Modal>
+      ) : null}
     </section>
   );
 }
@@ -144,41 +242,37 @@ function EmptyData({ text = '暂无数据' }: { text?: string }) {
   return <div className="data-screen-empty">{text}</div>;
 }
 
-function IndustryRankList({ items }: { items: DistributionItem[] }) {
-  const maxValue = Math.max(...items.map((item) => item.value), 1);
-
-  return (
-    <div className="industry-rank-list">
-      {items.slice(0, 5).map((item) => (
-        <div className="industry-rank-row" key={item.name}>
-          <span>{item.name}</span>
-          <div className="industry-rank-track">
-            <i style={{ width: `${Math.max(8, (item.value / maxValue) * 100)}%` }} />
-          </div>
-          <strong>{item.value}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function DashboardPage() {
   const navigate = useNavigate();
+  const user = useAuthStore((state) => state.user);
+  const sensitiveReadable = canReadSensitive(user);
   const [overview, setOverview] = useState<DashboardOverview>(emptyOverview);
   const [dimension, setDimension] = useState<DashboardDimension>('grade');
   const [mainDistribution, setMainDistribution] = useState<DistributionItem[]>([]);
-  const [industryDistribution, setIndustryDistribution] = useState<DistributionItem[]>([]);
+  const [mainDistributionDimension, setMainDistributionDimension] =
+    useState<DashboardDimension>('grade');
   const [alumniFeed, setAlumniFeed] = useState<AlumniProfile[]>([]);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searchResults, setSearchResults] = useState<AlumniProfile[]>([]);
-  const [searchTotal, setSearchTotal] = useState(0);
-  const [initialLoading, setInitialLoading] = useState(false);
   const [mainLoading, setMainLoading] = useState(false);
   const [feedLoading, setFeedLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedAlumni, setSelectedAlumni] = useState<AlumniProfile | null>(null);
+  const [distributionOpen, setDistributionOpen] = useState(false);
+  const [distributionLoading, setDistributionLoading] = useState(false);
+  const [distributionTitle, setDistributionTitle] = useState('');
+  const [distributionAlumni, setDistributionAlumni] = useState<AlumniProfile[]>([]);
+  const [allAlumniCache, setAllAlumniCache] = useState<AlumniProfile[] | null>(null);
+  const [regionDataLoading, setRegionDataLoading] = useState(true);
+  const [regionMapMode, setRegionMapMode] = useState<MapMode>('shandong');
+  const [selectedMapRegion, setSelectedMapRegion] = useState('');
+  const [selectedMapDistrict, setSelectedMapDistrict] = useState('');
   const [now, setNow] = useState(() => new Date());
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement));
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [feedOffset, setFeedOffset] = useState(0);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -198,61 +292,105 @@ export function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    setInitialLoading(true);
     setFeedLoading(true);
+    setRegionDataLoading(true);
     Promise.allSettled([
       dashboardApi.overview(),
-      dashboardApi.distribution('industry'),
       dashboardApi.distribution('grade'),
-      alumniApi.list({ page: 1, page_size: 18 }),
+      loadAllAlumni(),
     ])
-      .then(([overviewResult, industryResult, mainResult, feedResult]) => {
+      .then(([overviewResult, mainResult, feedResult]) => {
         if (overviewResult.status === 'fulfilled') {
           setOverview(overviewResult.value);
         } else {
           message.error(overviewResult.reason?.message || '概览数据加载失败');
         }
 
-        if (industryResult.status === 'fulfilled') {
-          setIndustryDistribution(industryResult.value);
-        } else {
-          message.error(industryResult.reason?.message || '行业分布加载失败');
-        }
-
         if (mainResult.status === 'fulfilled') {
           setMainDistribution(sortByNumericName(mainResult.value));
+          setMainDistributionDimension('grade');
         } else {
           message.error(mainResult.reason?.message || '主图数据加载失败');
         }
 
         if (feedResult.status === 'fulfilled') {
-          setAlumniFeed(feedResult.value.items);
+          setAlumniFeed(feedResult.value);
+          setAllAlumniCache(feedResult.value);
+          if (!sensitiveReadable) {
+            setRegionDataLoading(false);
+            return;
+          }
+          void enrichAlumniMailingAddresses(feedResult.value)
+            .then((items) => {
+              setAlumniFeed(items);
+              setAllAlumniCache(items);
+            })
+            .catch(() => {
+              message.warning('通讯地址加载失败，地域将仅按工作单位判定');
+            })
+            .finally(() => {
+              setRegionDataLoading(false);
+            });
         } else {
-          message.error(feedResult.reason?.message || '校友信息流加载失败');
+          setRegionDataLoading(false);
+          message.error(feedResult.reason?.message || '校友信息加载失败');
         }
       })
       .finally(() => {
-        setInitialLoading(false);
         setFeedLoading(false);
       });
-  }, []);
+  }, [sensitiveReadable]);
 
   useEffect(() => {
+    if (searchKeyword.trim() || alumniFeed.length <= FEED_WINDOW_SIZE) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      setFeedOffset((current) => (current + 1) % alumniFeed.length);
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [alumniFeed.length, searchKeyword]);
+
+  useEffect(() => {
+    let cancelled = false;
     setMainLoading(true);
+    setMainDistribution([]);
     dashboardApi
       .distribution(dimension)
       .then((items) => {
-        setMainDistribution(dimension === 'grade' || dimension === 'cohort' ? sortByNumericName(items) : items);
+        if (cancelled) {
+          return;
+        }
+        setMainDistribution(
+          dimension === 'grade' || dimension === 'cohort' ? sortByNumericName(items) : items,
+        );
+        setMainDistributionDimension(dimension);
       })
-      .catch((error: Error) => message.error(error.message || '分布数据加载失败'))
-      .finally(() => setMainLoading(false));
+      .catch((error: Error) => {
+        if (!cancelled) {
+          message.error(error.message || '分布数据加载失败');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setMainLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [dimension]);
 
   const accountRate = overview.total_alumni
     ? toPercent(overview.total_accounts / overview.total_alumni)
     : 0;
   const averageCompletion = toPercent(
-    (overview.mobile_complete_rate + overview.work_unit_complete_rate + overview.mentor_complete_rate) / 3,
+    (overview.mobile_complete_rate +
+      overview.work_unit_complete_rate +
+      overview.mentor_complete_rate) /
+      3,
   );
 
   const currentTime = useMemo(
@@ -271,6 +409,46 @@ export function DashboardPage() {
   const isCompactChart = viewportWidth <= 1500;
 
   const showLineChart = dimension === 'grade' || dimension === 'cohort';
+  const isGraduationRateDimension = dimension === 'cohort';
+  const chartDistribution = useMemo<ChartDistributionItem[]>(() => {
+    if (mainDistributionDimension !== dimension) {
+      return [];
+    }
+
+    return isGraduationRateDimension
+      ? toGraduationRateDistribution(mainDistribution, allAlumniCache ?? alumniFeed)
+      : mainDistribution;
+  }, [
+    allAlumniCache,
+    alumniFeed,
+    dimension,
+    isGraduationRateDimension,
+    mainDistribution,
+    mainDistributionDimension,
+  ]);
+  const chartCountData = useMemo<ChartDistributionItem[]>(
+    () =>
+      isGraduationRateDimension
+        ? chartDistribution.map((item) => ({
+            ...item,
+            value: item.cohortTotal ?? 0,
+            graduationRate: item.graduationRate ?? item.value,
+          }))
+        : chartDistribution,
+    [chartDistribution, isGraduationRateDimension],
+  );
+  const chartBarData = chartCountData;
+  const chartLineData = useMemo<ChartDistributionItem[]>(
+    () =>
+      isGraduationRateDimension
+        ? chartDistribution.map((item) => ({
+            ...item,
+            value: item.graduationRate ?? item.value,
+          }))
+        : chartDistribution,
+    [chartDistribution, isGraduationRateDimension],
+  );
+  const chartPieData = chartCountData;
 
   const mainChartOption = useMemo(
     () => ({
@@ -278,41 +456,93 @@ export function DashboardPage() {
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
+        confine: true,
         backgroundColor: 'rgba(5, 20, 46, 0.92)',
         borderColor: '#2bcfff',
         textStyle: { color: '#e8f7ff' },
+        formatter: isGraduationRateDimension
+          ? (params: unknown) => {
+              const items = Array.isArray(params) ? params : [params];
+              const first = items[0] as { name?: string; data?: ChartDistributionItem } | undefined;
+              const data = first?.data;
+              const graduationRate = data?.graduationRate ?? data?.value ?? 0;
+              const rateText = data?.rateUnavailable
+                ? '暂无匹配入学人数'
+                : formatPercentValue(graduationRate);
+              return [
+                first?.name || '',
+                `该届总人数：${formatNumber(data?.cohortTotal ?? data?.value ?? 0)} 人`,
+                `毕业率：${rateText}`,
+                `正常毕业人数：${formatNumber(data?.rawValue ?? 0)} 人`,
+                `对应入学年级：${data?.admissionGrade ?? '未匹配'}`,
+                `入学人数：${formatNumber(data?.admissionCount ?? 0)} 人`,
+              ].join('<br/>');
+            }
+          : undefined,
       },
       grid: {
-        top: isCompactChart ? 22 : 30,
-        right: isCompactChart ? 12 : 20,
-        bottom: mainDistribution.length > 8 ? (isCompactChart ? 58 : 72) : isCompactChart ? 30 : 40,
-        left: isCompactChart ? 38 : 48,
+        top: isGraduationRateDimension ? (isCompactChart ? 42 : 50) : isCompactChart ? 20 : 26,
+        right: isGraduationRateDimension ? (isCompactChart ? 32 : 44) : isCompactChart ? 6 : 10,
+        bottom:
+          chartDistribution.length > 8 ? (isCompactChart ? 32 : 38) : isCompactChart ? 20 : 26,
+        left: isCompactChart ? 22 : 30,
         containLabel: true,
       },
       xAxis: {
         type: 'category',
-        data: mainDistribution.map((item) => item.name),
+        data: chartDistribution.map((item) => item.name),
         axisLine: { lineStyle: { color: axisColor } },
         axisTick: { show: false },
         axisLabel: {
           color: axisColor,
           interval: 0,
-          rotate: mainDistribution.length > 8 ? (isCompactChart ? 40 : 32) : 0,
-          fontSize: isCompactChart ? 11 : 12,
+          rotate: chartDistribution.length > 8 ? (isCompactChart ? 34 : 28) : 0,
+          fontSize: isCompactChart ? 9 : 11,
         },
       },
-      yAxis: {
-        type: 'value',
-        minInterval: 1,
-        splitLine: { lineStyle: { color: splitLineColor } },
-        axisLabel: { color: axisColor, fontSize: isCompactChart ? 11 : 12 },
-      },
+      yAxis: isGraduationRateDimension
+        ? [
+            {
+              type: 'value',
+              name: '人数',
+              alignTicks: true,
+              minInterval: 1,
+              splitLine: { lineStyle: { color: splitLineColor } },
+              axisLabel: { color: axisColor, fontSize: isCompactChart ? 11 : 12 },
+              nameTextStyle: { color: axisColor, fontSize: isCompactChart ? 10 : 11 },
+            },
+            {
+              type: 'value',
+              name: '毕业率',
+              alignTicks: true,
+              min: 0,
+              max: 100,
+              splitLine: { show: false },
+              axisLabel: {
+                color: axisColor,
+                fontSize: isCompactChart ? 11 : 12,
+                formatter: (value: number) => formatPercentValue(value),
+              },
+              nameTextStyle: { color: axisColor, fontSize: isCompactChart ? 10 : 11 },
+            },
+          ]
+        : {
+            type: 'value',
+            minInterval: 1,
+            splitLine: { lineStyle: { color: splitLineColor } },
+            axisLabel: {
+              color: axisColor,
+              fontSize: isCompactChart ? 11 : 12,
+              formatter: '{value}',
+            },
+          },
       series: [
         {
-          name: '人数',
+          name: isGraduationRateDimension ? '该届总人数' : '人数',
           type: 'bar',
-          data: mainDistribution.map((item) => item.value),
-          barMaxWidth: isCompactChart ? 30 : 42,
+          data: chartBarData,
+          yAxisIndex: 0,
+          barMaxWidth: isCompactChart ? 32 : 44,
           itemStyle: {
             borderRadius: [8, 8, 0, 0],
             color: {
@@ -332,9 +562,10 @@ export function DashboardPage() {
         ...(showLineChart
           ? [
               {
-                name: '趋势',
+                name: isGraduationRateDimension ? '毕业率趋势' : '趋势',
                 type: 'line' as const,
-                data: mainDistribution.map((item) => item.value),
+                data: chartLineData,
+                yAxisIndex: isGraduationRateDimension ? 1 : 0,
                 smooth: true,
                 symbolSize: isCompactChart ? 6 : 8,
                 lineStyle: { width: isCompactChart ? 2 : 3, color: '#ffcf67' },
@@ -344,7 +575,14 @@ export function DashboardPage() {
           : []),
       ],
     }),
-    [isCompactChart, mainDistribution, showLineChart],
+    [
+      chartBarData,
+      chartDistribution,
+      chartLineData,
+      isCompactChart,
+      isGraduationRateDimension,
+      showLineChart,
+    ],
   );
 
   const mainPieOption = useMemo(
@@ -352,94 +590,60 @@ export function DashboardPage() {
       color: chartPalette,
       tooltip: {
         trigger: 'item',
+        confine: true,
         backgroundColor: 'rgba(5, 20, 46, 0.92)',
         borderColor: '#2bcfff',
         textStyle: { color: '#e8f7ff' },
+        formatter: isGraduationRateDimension
+          ? (params: { name?: string; data?: ChartDistributionItem }) => {
+              const rateText = params.data?.rateUnavailable
+                ? '暂无匹配入学人数'
+                : formatPercentValue(params.data?.graduationRate ?? 0);
+              return [
+                params.name || '',
+                `该届总人数：${formatNumber(params.data?.cohortTotal ?? params.data?.value ?? 0)} 人`,
+                `毕业率：${rateText}`,
+                `正常毕业人数：${formatNumber(params.data?.rawValue ?? 0)} 人`,
+                `对应入学年级：${params.data?.admissionGrade ?? '未匹配'}`,
+                `入学人数：${formatNumber(params.data?.admissionCount ?? 0)} 人`,
+              ].join('<br/>');
+            }
+          : undefined,
       },
       legend: {
-        type: 'scroll',
-        bottom: isCompactChart ? 0 : 4,
-        icon: 'circle',
-        textStyle: {
-          color: axisColor,
-          fontWeight: 700,
-          fontSize: isCompactChart ? 11 : 12,
-        },
-        pageIconColor: '#36d7ff',
-        pageIconInactiveColor: 'rgba(195, 224, 255, 0.28)',
-        pageTextStyle: { color: axisColor },
+        show: false,
       },
       series: [
         {
-          name: '占比',
+          name: isGraduationRateDimension ? '届数占比' : '占比',
           type: 'pie',
-          radius: isCompactChart ? ['34%', '52%'] : ['42%', '64%'],
-          center: ['50%', isCompactChart ? '35%' : '40%'],
+          radius: isCompactChart ? ['18%', '31%'] : ['22%', '35%'],
+          center: ['50%', isCompactChart ? '51%' : '48%'],
           avoidLabelOverlap: true,
           label: {
             color: '#eaf7ff',
-            formatter: '{b}\n{d}%',
+            formatter: (params: { name: string; percent?: number; value?: number }) =>
+              (params.percent || 0) >= 2
+                ? `${params.name}\n${formatPercentValue(params.percent ?? 0)}`
+                : '',
             fontWeight: 800,
-            fontSize: isCompactChart ? 11 : 12,
+            fontSize: isCompactChart ? 9 : 10,
+            distanceToLabelLine: 3,
           },
           labelLine: {
+            length: isCompactChart ? 4 : 8,
+            length2: isCompactChart ? 3 : 6,
             lineStyle: { color: 'rgba(195, 224, 255, 0.52)' },
           },
-          data: mainDistribution,
+          labelLayout: () => ({
+            hideOverlap: true,
+            moveOverlap: 'shiftY',
+          }),
+          data: chartPieData,
         },
       ],
     }),
-    [isCompactChart, mainDistribution],
-  );
-
-  const industryChartOption = useMemo(
-    () => ({
-      color: ['#31d98b'],
-      tooltip: {
-        trigger: 'axis',
-        axisPointer: { type: 'shadow' },
-        backgroundColor: 'rgba(5, 20, 46, 0.92)',
-        borderColor: '#2bcfff',
-        textStyle: { color: '#e8f7ff' },
-      },
-      grid: { top: 12, right: 28, bottom: 24, left: 82 },
-      xAxis: {
-        type: 'value',
-        minInterval: 1,
-        splitLine: { lineStyle: { color: splitLineColor } },
-        axisLabel: { color: axisColor },
-      },
-      yAxis: {
-        type: 'category',
-        data: industryDistribution.slice(0, 8).map((item) => item.name).reverse(),
-        axisLine: { lineStyle: { color: axisColor } },
-        axisTick: { show: false },
-        axisLabel: { color: axisColor },
-      },
-      series: [
-        {
-          name: '人数',
-          type: 'bar',
-          data: industryDistribution.slice(0, 8).map((item) => item.value).reverse(),
-          barMaxWidth: 14,
-          itemStyle: {
-            borderRadius: 999,
-            color: {
-              type: 'linear',
-              x: 0,
-              y: 0,
-              x2: 1,
-              y2: 0,
-              colorStops: [
-                { offset: 0, color: '#1160ff' },
-                { offset: 1, color: '#2cf5a5' },
-              ],
-            },
-          },
-        },
-      ],
-    }),
-    [industryDistribution],
+    [chartPieData, isCompactChart, isGraduationRateDimension],
   );
 
   const kpis = [
@@ -452,20 +656,28 @@ export function DashboardPage() {
     { label: '导师完整率', value: toPercent(overview.mentor_complete_rate), suffix: '%' },
   ];
 
+  const visibleFeed = useMemo(() => {
+    if (alumniFeed.length <= FEED_WINDOW_SIZE) {
+      return alumniFeed;
+    }
+    return Array.from(
+      { length: FEED_WINDOW_SIZE },
+      (_, index) => alumniFeed[(feedOffset + index) % alumniFeed.length],
+    );
+  }, [alumniFeed, feedOffset]);
+
   const runSearch = (value = searchKeyword) => {
     const keyword = value.trim();
     if (!keyword) {
       setSearchResults([]);
-      setSearchTotal(0);
       return;
     }
 
     setSearchLoading(true);
     alumniApi
-      .list({ page: 1, page_size: 8, keyword })
+      .list({ page: 1, page_size: 100, keyword })
       .then((result) => {
         setSearchResults(result.items);
-        setSearchTotal(result.total);
       })
       .catch((error: Error) => message.error(error.message || '校友搜索失败'))
       .finally(() => setSearchLoading(false));
@@ -473,22 +685,87 @@ export function DashboardPage() {
 
   const togglePageFullscreen = () => {
     if (document.fullscreenElement) {
-      document
-        .exitFullscreen()
-        .catch(() => message.warning('退出全屏失败，请重试'));
+      document.exitFullscreen().catch(() => message.warning('退出全屏失败，请重试'));
       return;
     }
 
-    document.documentElement.requestFullscreen().catch(() => message.warning('进入全屏失败，请重试'));
+    document.documentElement
+      .requestFullscreen()
+      .catch(() => message.warning('进入全屏失败，请重试'));
+  };
+
+  const openAlumniDetail = (item: AlumniProfile) => {
+    setSelectedAlumni(item);
+    setDetailOpen(true);
+    setDetailLoading(true);
+    alumniApi
+      .detail(item.id)
+      .then(setSelectedAlumni)
+      .catch((error: Error) => message.error(error.message || '校友完整信息加载失败'))
+      .finally(() => setDetailLoading(false));
+  };
+
+  const openDistributionAlumni = async (value: string) => {
+    const dimensionLabel = dimensions.find((item) => item.value === dimension)?.label || '分布';
+    setDistributionTitle(
+      dimension === 'cohort'
+        ? `${dimensionLabel}对应届数：${value}`
+        : `${dimensionLabel}：${value}`,
+    );
+    setDistributionOpen(true);
+    setDistributionLoading(true);
+
+    try {
+      const profiles = allAlumniCache || (await loadAllAlumni());
+      if (!allAlumniCache) {
+        setAllAlumniCache(profiles);
+      }
+      const field = dimensionFields[dimension];
+      if (dimension === 'cohort') {
+        const cohortYear = extractYear(value);
+        setDistributionAlumni(
+          profiles.filter((profile) => extractYear(profile.cohort) === cohortYear),
+        );
+        return;
+      }
+
+      setDistributionAlumni(
+        profiles.filter((profile) => formatText(String(profile[field] || '')) === value),
+      );
+    } catch (error) {
+      message.error((error as Error).message || '分布项校友信息加载失败');
+      setDistributionAlumni([]);
+    } finally {
+      setDistributionLoading(false);
+    }
+  };
+
+  const chartClickEvents = {
+    click: (params: { name?: string }) => {
+      if (params.name) {
+        void openDistributionAlumni(params.name);
+      }
+    },
   };
 
   const renderAlumniRows = (items: AlumniProfile[]) =>
     items.map((item) => (
-      <tr key={item.id}>
+      <tr
+        key={item.id}
+        className="dashboard-clickable-row"
+        tabIndex={0}
+        onClick={() => openAlumniDetail(item)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openAlumniDetail(item);
+          }
+        }}
+      >
         <td>{item.name}</td>
         <td>{formatText(item.grade)}</td>
         <td>{formatText(item.industry)}</td>
-        <td>{formatText(item.work_unit)}</td>
+        <td>{sensitiveReadable ? formatText(item.work_unit) : '无权限查看'}</td>
         <td>{formatText(item.mentor)}</td>
       </tr>
     ));
@@ -506,7 +783,10 @@ export function DashboardPage() {
         </div>
         <div className="dashboard-screen-tools">
           <span>{currentTime}</span>
-          <Button icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={togglePageFullscreen}>
+          <Button
+            icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+            onClick={togglePageFullscreen}
+          >
             {isFullscreen ? '退出全屏' : '全屏展示'}
           </Button>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/admin/alumni')}>
@@ -530,6 +810,7 @@ export function DashboardPage() {
       <main className="dashboard-screen-grid">
         <DataScreenPanel
           title="多维分布主图"
+          subtitle="点击柱形、趋势点或环形分区查看对应校友"
           className="dashboard-main-panel"
           loading={mainLoading}
           extra={
@@ -548,12 +829,14 @@ export function DashboardPage() {
                   key={`main-bar-${expanded ? 'expanded' : 'normal'}-${dimension}`}
                   option={mainChartOption}
                   className="dashboard-chart dashboard-chart-main"
+                  onEvents={chartClickEvents}
                   notMerge
                 />
                 <ReactECharts
                   key={`main-pie-${expanded ? 'expanded' : 'normal'}-${dimension}`}
                   option={mainPieOption}
                   className="dashboard-chart dashboard-chart-pie"
+                  onEvents={chartClickEvents}
                   notMerge
                 />
               </div>
@@ -563,125 +846,145 @@ export function DashboardPage() {
           }
         </DataScreenPanel>
 
-        <DataScreenPanel title="行业分布" subtitle="就业与职业方向排行" loading={initialLoading}>
+        <DataScreenPanel
+          title="校友地域地图"
+          subtitle="山东省与全国切换，点击区域联动右侧行业和人员"
+          className="dashboard-map-panel"
+          expandable={false}
+        >
           {(expanded) =>
-            industryDistribution.length ? (
-              <div className={`industry-layout ${expanded ? 'industry-layout-expanded' : ''}`}>
-                {expanded ? (
-                  <ReactECharts
-                    key="industry-expanded"
-                    option={industryChartOption}
-                    className="dashboard-chart"
-                    notMerge
-                  />
-                ) : (
-                  <IndustryRankList items={industryDistribution} />
-                )}
-                <div className="industry-tags">
-                  {industryDistribution.slice(0, expanded ? 20 : 12).map((item, index) => {
-                    const maxValue = industryDistribution[0]?.value || 1;
-                    const weight = item.value / maxValue;
-                    const fontSize = Math.round(14 + weight * 18);
-                    const colorIndex = index % chartPalette.length;
-
-                    return (
-                      <span
-                        key={item.name}
-                        className="industry-tag"
-                        style={{
-                          fontSize: `${fontSize}px`,
-                          color: chartPalette[colorIndex],
-                          opacity: 0.6 + weight * 0.4,
-                        }}
-                      >
-                        {item.name}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
+            sensitiveReadable ? (
+              <RegionIndustryExplorer
+                alumni={allAlumniCache ?? alumniFeed}
+                expanded={expanded}
+                loading={regionDataLoading}
+                view="map"
+                mapMode={regionMapMode}
+                selectedRegion={selectedMapRegion}
+                selectedDistrict={selectedMapDistrict}
+                onMapModeChange={(mode) => {
+                  setRegionMapMode(mode);
+                  setSelectedMapDistrict('');
+                }}
+                onRegionChange={(region) => {
+                  setSelectedMapRegion(region);
+                  setSelectedMapDistrict('');
+                }}
+                onDistrictChange={setSelectedMapDistrict}
+                onSelectAlumni={openAlumniDetail}
+              />
             ) : (
-              <EmptyData />
+              <EmptyData text="无权限查看地域分布" />
             )
           }
         </DataScreenPanel>
 
         <DataScreenPanel
-          title="校友信息流"
+          title="校友信息检索"
+          subtitle="按姓名、单位、职务、导师等关键词检索，点击条目查看完整信息"
           loading={feedLoading}
           className="dashboard-feed-panel"
-        >
-          {() =>
-            alumniFeed.length ? (
-              <div className="alumni-feed">
-                <table className="dashboard-table">
-                  <thead>
-                    <tr>
-                      <th>姓名</th>
-                      <th>年级</th>
-                      <th>行业</th>
-                      <th>所在单位</th>
-                      <th>导师</th>
-                    </tr>
-                  </thead>
-                  <tbody>{renderAlumniRows(alumniFeed)}</tbody>
-                </table>
-              </div>
-            ) : (
-              <EmptyData />
-            )
-          }
-        </DataScreenPanel>
-
-        <DataScreenPanel
-          title="快速检索"
-          subtitle="按姓名、单位、职务、导师等关键词查询"
-          className="dashboard-search-panel"
-          loading={searchLoading}
           extra={<SearchOutlined />}
         >
           {() => (
-            <div className="dashboard-search">
-              <Input.Search
-                value={searchKeyword}
-                onChange={(event) => setSearchKeyword(event.target.value)}
-                onSearch={runSearch}
-                placeholder="输入校友姓名、单位、导师..."
-                enterButton="搜索"
-              />
-              {searchKeyword && searchTotal ? (
-                <p className="dashboard-search-count">共匹配 {searchTotal} 条，展示前 8 条</p>
-              ) : null}
-              {searchResults.length ? (
-                <table className="dashboard-table">
-                  <thead>
-                    <tr>
-                      <th>姓名</th>
-                      <th>性别</th>
-                      <th>年级</th>
-                      <th>导师</th>
-                      <th>联系电话</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {searchResults.map((item) => (
-                      <tr key={item.id}>
-                        <td>{item.name}</td>
-                        <td>{formatText(item.gender)}</td>
-                        <td>{formatText(item.grade)}</td>
-                        <td>{formatText(item.mentor)}</td>
-                        <td>{formatText(item.mobile)}</td>
+            <div className="dashboard-alumni-search">
+              <div className="dashboard-alumni-search-bar">
+                <Input.Search
+                  value={searchKeyword}
+                  loading={searchLoading}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setSearchKeyword(value);
+                    if (!value.trim()) {
+                      setSearchResults([]);
+                      setFeedOffset(0);
+                    }
+                  }}
+                  onSearch={runSearch}
+                  placeholder={
+                    sensitiveReadable
+                      ? '输入姓名、单位、职务、导师等关键词...'
+                      : '输入姓名、行业、导师等关键词...'
+                  }
+                  enterButton="搜索"
+                />
+              </div>
+              {(searchKeyword.trim() ? searchResults : visibleFeed).length ? (
+                <div className="alumni-feed dashboard-alumni-search-results">
+                  <table className="dashboard-table">
+                    <thead>
+                      <tr>
+                        <th>姓名</th>
+                        <th>年级</th>
+                        <th>行业</th>
+                        <th>所在单位</th>
+                        <th>导师</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody
+                      key={searchKeyword.trim() ? 'search-results' : `feed-${feedOffset}`}
+                      className={searchKeyword.trim() ? '' : 'dashboard-feed-playing'}
+                    >
+                      {renderAlumniRows(searchKeyword.trim() ? searchResults : visibleFeed)}
+                    </tbody>
+                  </table>
+                </div>
               ) : (
-                <EmptyData text={searchKeyword ? '暂无匹配结果' : '输入关键词后展示检索结果'} />
+                <EmptyData text={searchKeyword.trim() ? '暂无匹配结果' : '暂无校友信息'} />
               )}
             </div>
           )}
         </DataScreenPanel>
+
+        <DataScreenPanel
+          title="地域与行业分布"
+          subtitle="省内外、城市、区县与行业联动"
+          className="dashboard-industry-panel"
+          expandable={sensitiveReadable}
+        >
+          {(expanded) =>
+            sensitiveReadable ? (
+              <RegionIndustryExplorer
+                alumni={allAlumniCache ?? alumniFeed}
+                expanded={expanded}
+                loading={regionDataLoading}
+                view="industry"
+                mapMode={regionMapMode}
+                selectedRegion={selectedMapRegion}
+                selectedDistrict={selectedMapDistrict}
+                onMapModeChange={setRegionMapMode}
+                onRegionChange={setSelectedMapRegion}
+                onDistrictChange={setSelectedMapDistrict}
+                onSelectAlumni={openAlumniDetail}
+              />
+            ) : (
+              <EmptyData text="无权限查看地域与行业分布" />
+            )
+          }
+        </DataScreenPanel>
       </main>
+
+      <AlumniDetailModal
+        open={detailOpen}
+        loading={detailLoading}
+        profile={selectedAlumni}
+        onClose={() => {
+          setDetailOpen(false);
+          setSelectedAlumni(null);
+        }}
+      />
+      <DistributionAlumniModal
+        open={distributionOpen}
+        loading={distributionLoading}
+        title={distributionTitle}
+        items={distributionAlumni}
+        sensitiveReadable={sensitiveReadable}
+        onClose={() => setDistributionOpen(false)}
+        onSelect={(profile) => {
+          setDistributionOpen(false);
+          openAlumniDetail(profile);
+        }}
+      />
     </div>
   );
 }

@@ -32,6 +32,12 @@ REDIS_ADDR=127.0.0.1:6379
 REDIS_DB=0
 ```
 
+如果 API 部署在 Nginx、Cloudflare 或其他反向代理之后，需要配置可信代理，否则限流中间件获取到的客户端 IP 可能是代理服务器地址：
+
+```bash
+SERVER_TRUSTED_PROXIES=10.0.0.0/8,192.168.0.1
+```
+
 认证默认使用 HS256 JWT。生产环境必须覆盖：
 
 ```bash
@@ -49,17 +55,32 @@ role: super_admin
 
 ## Docker Compose
 
+If you want the API container to pick up local secrets and database settings, create `server/.env` first:
+
+```bash
+cd server
+cp .env.example .env
+```
+
 ```bash
 docker compose up --build
 ```
 
-Compose 会将 MySQL 容器的 `3306` 端口映射到本机 `3307`，并在首次创建数据卷时执行 `server/migrations` 下的 SQL 初始化脚本。
+Compose 会将 MySQL 容器的 `3306` 端口映射到本机 `3307`。MySQL 在首次创建数据卷时执行 `server/migrations` 下的 SQL 初始化脚本；随后 `migrate` 服务会在 API 启动前应用尚未记录的增量迁移，因此保留的数据卷也能获得新表和新字段。
 
 启动后可检查：
 
 ```bash
 curl http://127.0.0.1:8080/api/v1/health/live
 curl http://127.0.0.1:8080/api/v1/health/ready
+```
+
+## 限流边界压测
+
+在 Docker MySQL 和 Redis 已启动后，可以运行限流边界测试脚本。脚本会临时启动一个本地 API 进程，使用 Redis 分布式限流，并通过 Vegeta 验证健康检查跳过限流、登录 burst、账号隔离、验证码 target 隔离和全局接口限流。
+
+```bash
+./server/scripts/rate_limit_boundary_test.sh
 ```
 
 ## GORM 代码生成

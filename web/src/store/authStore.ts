@@ -7,7 +7,9 @@ interface AuthState {
   user: CurrentUser | null;
   sessionChecked: boolean;
   loading: boolean;
-  login: (payload: LoginRequest) => Promise<CurrentUser>;
+  login: (
+    payload: LoginRequest,
+  ) => Promise<{ user: CurrentUser | null; registrationToken: string | null }>;
   ensureCurrentUser: () => Promise<CurrentUser | null>;
   logout: () => Promise<void>;
   changePassword: (payload: ChangePasswordRequest) => Promise<void>;
@@ -22,9 +24,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ loading: true });
     try {
       const response = await authApi.login(payload);
+      if (response.registration_token) {
+        set({ loading: false });
+        return { user: null, registrationToken: response.registration_token };
+      }
       cacheAccessToken(response.access_token);
-      set({ user: response.user, sessionChecked: true, loading: false });
-      return response.user;
+      const currentUser = await authApi.me();
+      set({ user: currentUser, sessionChecked: true, loading: false });
+      return { user: currentUser, registrationToken: null };
     } catch (error) {
       set({ loading: false });
       throw error;
